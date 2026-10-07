@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { checkRateLimit, normalizeUsername, isValidUsername } from "@/lib/rate-limiter";
 import { createOrder } from "@/lib/orders";
 import { antiBot } from "@/lib/anti-bot";
+import { dbAdapter } from "@/lib/mongodb";
 
 export const maxDuration = 60;
 
@@ -13,6 +14,17 @@ const ALLOWED_OPTIONS: Record<number, { windowSeconds: number; label: string }> 
 
 export async function POST(req: NextRequest) {
   try {
+    // 0. System Activity Check: reject if toggled Down in Admin
+    const settings = await dbAdapter.getSystemSettings();
+    if (!settings.isLive) {
+      return NextResponse.json(
+        {
+          error: settings.maintenanceMessage || "The Ozama Swarm is currently offline for maintenance. Funding is temporarily paused.",
+        },
+        { status: 503 }
+      );
+    }
+
     const ip = req.headers.get("x-forwarded-for") || "127.0.0.1";
 
     // 1. Anti-Bot IP rate check (max 8 fundings attempted per min per IP)

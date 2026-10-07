@@ -38,3 +38,20 @@ export interface CooldownCheckResult {
   cooldownSeconds: number;
   nextResetIso?: string;
 }
+
+export interface SystemSettings {
+  isLive: boolean;
+  maintenanceMessage?: string;
+  updatedAt: string;
+}
+
+export interface UserSummary {
+  username: string;
+  totalFunded: number;
+  totalOrders: number;
+  completedOrders: number;
+  failedOrders: number;
+  lastActive: string;
+  lastStatus: string;
+}
+

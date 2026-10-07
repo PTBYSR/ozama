@@ -78,6 +78,12 @@ export default function OzamaMintPage() {
   // Username validation regex: 3-24 alphanumeric or underscore
   const isUsernameValid = /^[a-zA-Z0-9_]{3,24}$/.test(username.trim().replace(/^@+/, ""));
 
+  // Swarm Activity Status (Live vs Down)
+  const [systemStatus, setSystemStatus] = useState<{ isLive: boolean; maintenanceMessage?: string }>({
+    isLive: true,
+    maintenanceMessage: "",
+  });
+
   // Fetch corner statistics
   const fetchStats = async () => {
     try {
@@ -94,12 +100,31 @@ export default function OzamaMintPage() {
     }
   };
 
+  // Fetch live system status (Live vs Down)
+  const fetchSystemStatus = async () => {
+    try {
+      const res = await fetch("/api/system-status");
+      if (res.ok) {
+        const data = await res.json();
+        setSystemStatus({
+          isLive: data.isLive ?? true,
+          maintenanceMessage: data.maintenanceMessage || "",
+        });
+      }
+    } catch {
+      // keep fallback
+    }
+  };
+
   // Generate anti-bot client token & load stats on mount
   useEffect(() => {
     fetchStats();
+    fetchSystemStatus();
+    const statusInterval = setInterval(fetchSystemStatus, 8000);
     // Anti-bot challenge token with client timestamp
     const token = btoa(`ozm_${Date.now()}_${Math.random().toString(36).slice(2)}`);
     setBotToken(token);
+    return () => clearInterval(statusInterval);
   }, []);
 
   // 20-Person Concurrency Tracker & Heartbeat
@@ -206,8 +231,8 @@ export default function OzamaMintPage() {
     };
   }, [username]);
 
-  // Fields remain locked while executing OR while finished (until Start New Funding is allowed)
-  const isFieldsLocked = isExecuting || isComplete;
+  // Fields remain locked while executing, while finished, OR when swarm is Down (offline)
+  const isFieldsLocked = isExecuting || isComplete || !systemStatus.isLive;
 
   const logsRef = useRef<string[]>([]);
   useEffect(() => {
@@ -220,18 +245,6 @@ export default function OzamaMintPage() {
     setLogs((prev) => {
       const updated = [...prev, formatted];
       logsRef.current = updated;
-      if (typeof window !== "undefined") {
-        try {
-          const raw = localStorage.getItem("ozama_active_order");
-          if (raw) {
-            const parsed = JSON.parse(raw);
-            parsed.logs = updated;
-            localStorage.setItem("ozama_active_order", JSON.stringify(parsed));
-          }
-        } catch {
-          // ignore
-        }
-      }
       return updated;
     });
   };
@@ -258,6 +271,13 @@ export default function OzamaMintPage() {
   // Execute button clicked -> show confirmation modal
   const handleExecuteClick = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!systemStatus.isLive) {
+      setErrorMsg(
+        systemStatus.maintenanceMessage ||
+          "The Ozama Swarm is currently offline for maintenance. Please check back shortly."
+      );
+      return;
+    }
     if (!verifiedUser) {
       if (isVerifying) {
         setErrorMsg("Verifying player on Lagos Life, please wait...");
@@ -278,7 +298,7 @@ export default function OzamaMintPage() {
     setIsNoticeOpen(true);
   };
 
-  // Reusable order polling & progress listener (persists to localStorage)
+  // Reusable order polling & progress listener (persists order ID to URL, DB is authoritative)
   const startOrderPolling = (
     orderId: string,
     targetUser: string,
@@ -288,23 +308,15 @@ export default function OzamaMintPage() {
     setIsExecuting(true);
     setIsComplete(false);
 
+    // Sync order ID to URL for seamless reload persistence backed by DB
     if (typeof window !== "undefined") {
-      localStorage.setItem("ozama_username_draft", targetUser);
-      if (optionId || selectedOption.id) {
-        localStorage.setItem("ozama_option_draft", optionId || selectedOption.id);
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.set("order", orderId);
+        window.history.replaceState({}, "", url.toString());
+      } catch {
+        // ignore
       }
-      localStorage.setItem(
-        "ozama_active_order",
-        JSON.stringify({
-          orderId,
-          username: targetUser,
-          windowSeconds,
-          optionId: optionId || selectedOption.id,
-          percentComplete: 25,
-          status: "allocating",
-          logs: logsRef.current,
-        })
-      );
     }
 
     let lastLoggedStatus = "";
@@ -319,24 +331,6 @@ export default function OzamaMintPage() {
 
           if (order) {
             setProgress(order.percentComplete || 0);
-
-            // Continuously sync active state to localStorage so refresh never wipes anything
-            if (typeof window !== "undefined") {
-              try {
-                const raw = localStorage.getItem("ozama_active_order");
-                const current = raw ? JSON.parse(raw) : {};
-                current.orderId = orderId;
-                current.username = targetUser;
-                current.windowSeconds = windowSeconds;
-                current.optionId = optionId || selectedOption.id;
-                current.percentComplete = order.percentComplete;
-                current.status = order.status;
-                current.logs = logsRef.current;
-                localStorage.setItem("ozama_active_order", JSON.stringify(current));
-              } catch {
-                // ignore
-              }
-            }
 
             if (order.status === "authenticating" && lastLoggedStatus !== "authenticating") {
               lastLoggedStatus = "authenticating";
@@ -362,22 +356,6 @@ export default function OzamaMintPage() {
               addLog(`✓ Funds delivered! ₦${(order.amount || selectedOption.amount).toLocaleString()} credited to @${targetUser}.`);
               addLog(`(Ensure player has Lagos Life open to auto-sync bank balance).`);
               fetchStats();
-
-              if (typeof window !== "undefined") {
-                localStorage.setItem(
-                  "ozama_active_order",
-                  JSON.stringify({
-                    orderId,
-                    username: targetUser,
-                    windowSeconds,
-                    optionId: optionId || selectedOption.id,
-                    percentComplete: 100,
-                    status: "completed",
-                    completedAt: Date.now(),
-                    logs: logsRef.current,
-                  })
-                );
-              }
             } else if (order.status === "failed") {
               clearInterval(pollInterval);
               setIsExecuting(false);
@@ -392,120 +370,59 @@ export default function OzamaMintPage() {
     }, 1000);
   };
 
-  // 1. Initial mount: restore draft input if user previously typed
+  // Auto-resume active or completed session directly from Database on mount/refresh
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      const draftUser = localStorage.getItem("ozama_username_draft");
-      if (draftUser && !username) {
-        setUsername(draftUser);
-      }
-      const draftOptId = localStorage.getItem("ozama_option_draft");
-      if (draftOptId) {
-        const found = OPTIONS.find((o) => o.id === draftOptId);
-        if (found) setSelectedOption(found);
-      }
-    } catch {
-      // ignore
-    }
-  }, []);
+      const params = new URLSearchParams(window.location.search);
+      const urlOrderId = params.get("order");
+      if (!urlOrderId) return;
 
-  // 2. Auto-resume active or completed session on page reload / reopen
-  useEffect(() => {
-    if (typeof window === "undefined") return;
-    try {
-      const raw = localStorage.getItem("ozama_active_order");
-      if (!raw) return;
-      const saved = JSON.parse(raw);
-      if (!saved.username) return;
-
-      // IMMEDIATELY restore form fields and credentials so they NEVER vanish on refresh
-      setUsername(saved.username);
-      setVerifiedUser(saved.username);
-
-      if (saved.optionId) {
-        const opt = OPTIONS.find((o) => o.id === saved.optionId);
-        if (opt) setSelectedOption(opt);
-      }
-
-      if (saved.logs && Array.isArray(saved.logs) && saved.logs.length > 0) {
-        setLogs(saved.logs);
-      }
-
-      if (saved.percentComplete) {
-        setProgress(saved.percentComplete);
-      }
-
-      // Check if session had completed with active cooldown
-      if (saved.status === "completed" || saved.completedAt) {
-        const completedTime = saved.completedAt || Date.now();
-        const elapsed = Math.floor((Date.now() - completedTime) / 1000);
-        const remaining = Math.max(0, (saved.windowSeconds || 7200) - elapsed);
-
-        if (remaining > 0) {
-          setIsExecuting(false);
-          setIsComplete(true);
-          setProgress(100);
-          setCooldownRemaining(remaining);
-          return;
-        } else {
-          localStorage.removeItem("ozama_active_order");
-          return;
-        }
-      }
-
-      // If active order: lock fields and show ongoing progress
-      setIsExecuting(true);
-      setIsComplete(false);
-      setProgress(saved.percentComplete || 25);
-
-      if (!saved.orderId) return;
-
-      const resumeSavedSession = async () => {
+      const resumeDbSession = async () => {
         try {
-          const res = await fetch(`/api/status/${saved.orderId}`);
-          if (!res.ok) {
-            // Serverless cold-start: DO NOT wipe username or session! Continue live polling
-            startOrderPolling(saved.orderId, saved.username, saved.windowSeconds || 7200, saved.optionId);
-            return;
-          }
+          const res = await fetch(`/api/status/${urlOrderId}`);
+          if (!res.ok) return;
           const data = await res.json();
           const order = data.order;
-          if (!order) {
-            startOrderPolling(saved.orderId, saved.username, saved.windowSeconds || 7200, saved.optionId);
-            return;
-          }
+          if (!order) return;
+
+          setUsername(order.username);
+          setVerifiedUser(order.username);
+
+          const matchedOpt = OPTIONS.find((o) => o.amount === order.amount);
+          if (matchedOpt) setSelectedOption(matchedOpt);
+          const winSecs = matchedOpt?.windowSeconds || 7200;
 
           if (order.status === "completed") {
             const completedTime = order.completedAt
               ? new Date(order.completedAt).getTime()
               : Date.now();
             const elapsed = Math.floor((Date.now() - completedTime) / 1000);
-            const remaining = Math.max(0, (saved.windowSeconds || 7200) - elapsed);
+            const remaining = Math.max(0, winSecs - elapsed);
 
             setIsExecuting(false);
             setIsComplete(true);
             setProgress(100);
             setCooldownRemaining(remaining);
-            addLog(`✓ Funds delivered! ₦${(order.amount || 0).toLocaleString()} credited.`);
-            addLog(`(Ensure player has Lagos Life open to auto-sync bank balance).`);
+            addLog(`✓ Funds delivered! ₦${(order.amount || 0).toLocaleString()} credited to @${order.username}.`);
           } else if (order.status === "failed") {
             setIsExecuting(false);
             setErrorMsg(order.error || "Order failed.");
             addLog(`Failed: ${order.error || "Order failed"}`);
           } else {
+            setIsExecuting(true);
             setProgress(order.percentComplete || 25);
-            startOrderPolling(saved.orderId, saved.username, saved.windowSeconds || 7200, saved.optionId);
+            addLog(`Resuming active order #${urlOrderId} from database...`);
+            startOrderPolling(urlOrderId, order.username, winSecs, matchedOpt?.id);
           }
         } catch {
-          // Network error: keep restored UI intact and continue polling
-          startOrderPolling(saved.orderId, saved.username, saved.windowSeconds || 7200, saved.optionId);
+          // ignore transient resume error
         }
       };
 
-      resumeSavedSession();
+      resumeDbSession();
     } catch {
-      // keep existing state
+      // ignore
     }
   }, []);
 
@@ -574,7 +491,13 @@ export default function OzamaMintPage() {
   const handleReset = () => {
     if (cooldownRemaining > 0) return;
     if (typeof window !== "undefined") {
-      localStorage.removeItem("ozama_active_order");
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("order");
+        window.history.replaceState({}, "", url.pathname + (url.search ? url.search : ""));
+      } catch {
+        // ignore
+      }
     }
     setIsExecuting(false);
     setIsComplete(false);
@@ -586,8 +509,13 @@ export default function OzamaMintPage() {
   // Switch to different user
   const handleSwitchUser = () => {
     if (typeof window !== "undefined") {
-      localStorage.removeItem("ozama_active_order");
-      localStorage.removeItem("ozama_username_draft");
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("order");
+        window.history.replaceState({}, "", url.pathname + (url.search ? url.search : ""));
+      } catch {
+        // ignore
+      }
     }
     setIsExecuting(false);
     setIsComplete(false);
@@ -641,8 +569,23 @@ export default function OzamaMintPage() {
 
   return (
     <div className="min-h-dvh flex flex-col items-center justify-center p-4 sm:p-6 selection:bg-[#2f7de1] selection:text-white relative">
-      {/* Minimal Top Corner Stats Badge */}
-      <div className="fixed top-3.5 right-3.5 sm:top-5 sm:right-5 z-40 pointer-events-auto">
+      {/* Top Corner Badges */}
+      <div className="fixed top-3.5 right-3.5 sm:top-5 sm:right-5 z-40 pointer-events-auto flex items-center gap-2">
+        {/* Swarm Live/Down Activity Status Badge */}
+        <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full backdrop-blur-md border text-xs font-bold transition-all shadow-xs ${
+          systemStatus.isLive
+            ? "bg-white/90 border-emerald-500/30 text-emerald-700"
+            : "bg-rose-50/95 border-rose-300 text-rose-700"
+        }`}>
+          <span className={`w-2 h-2 rounded-full ${
+            systemStatus.isLive ? "bg-emerald-500 animate-pulse" : "bg-rose-500 animate-ping"
+          }`} />
+          <span className="text-[11px] font-bold">
+            {systemStatus.isLive ? "Swarm Live" : "Swarm Offline"}
+          </span>
+        </div>
+
+        {/* Minimal Top Corner Stats Badge */}
         <div className="flex items-center gap-2.5 bg-white/85 backdrop-blur-md px-3.5 py-1.5 rounded-full border border-[#d5dde6]/70 shadow-xs text-xs font-semibold text-[#16203c] transition-all">
           <div className="flex items-center gap-1.5">
             <span className="w-1.5 h-1.5 rounded-full bg-[#008751] animate-pulse" />
@@ -681,6 +624,20 @@ export default function OzamaMintPage() {
           </div>
         </div>
 
+        {/* Maintenance Alert when Swarm is Down */}
+        {!systemStatus.isLive && (
+          <div className="mb-5 p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium leading-relaxed text-center animate-in fade-in shadow-xs">
+            <div className="font-bold text-rose-900 flex items-center justify-center gap-1.5 mb-1">
+              <span>⚠️</span>
+              <span>Swarm Offline for Maintenance</span>
+            </div>
+            <p className="text-[11px] text-rose-700">
+              {systemStatus.maintenanceMessage ||
+                "Funding is temporarily paused while our swarm undergoes scheduled maintenance. Please check back shortly."}
+            </p>
+          </div>
+        )}
+
         {/* Input Form */}
         <form onSubmit={handleExecuteClick} className="space-y-5">
           {/* Invisible Anti-Bot Honeypot Field */}
@@ -711,9 +668,6 @@ export default function OzamaMintPage() {
                 onChange={(e) => {
                   const val = e.target.value;
                   setUsername(val);
-                  if (typeof window !== "undefined") {
-                    localStorage.setItem("ozama_username_draft", val);
-                  }
                   if (errorMsg) setErrorMsg(null);
                 }}
                 placeholder="lagoslife_username"
@@ -791,9 +745,6 @@ export default function OzamaMintPage() {
                     disabled={isFieldsLocked}
                     onClick={() => {
                       setSelectedOption(opt);
-                      if (typeof window !== "undefined") {
-                        localStorage.setItem("ozama_option_draft", opt.id);
-                      }
                     }}
                     className={`w-full text-left px-4 py-3 rounded-2xl border transition-all flex items-center justify-between text-sm ${
                       isSelected
@@ -820,13 +771,29 @@ export default function OzamaMintPage() {
 
           {/* Execute Button */}
           {!isExecuting && !isComplete && (
-            <button
-              type="submit"
-              disabled={!verifiedUser || isVerifying}
-              className="w-full py-3.5 px-4 lagos-button text-sm tracking-wide uppercase disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-            >
-              {isVerifying ? "Verifying..." : "Execute"}
-            </button>
+            systemStatus.isLive ? (
+              <button
+                type="submit"
+                disabled={!verifiedUser || isVerifying}
+                className="w-full py-3.5 px-4 lagos-button text-sm tracking-wide uppercase disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+              >
+                {isVerifying ? "Verifying..." : "Execute"}
+              </button>
+            ) : (
+              <div className="space-y-2">
+                <button
+                  type="button"
+                  disabled={true}
+                  className="w-full py-3.5 px-4 rounded-2xl bg-slate-100 text-rose-700 border border-rose-200 text-xs font-bold uppercase tracking-wider cursor-not-allowed flex items-center justify-center gap-2 select-none shadow-xs"
+                >
+                  <span className="w-2 h-2 rounded-full bg-rose-500 animate-ping" />
+                  <span>Swarm Offline — Maintenance in Progress</span>
+                </button>
+                <p className="text-[11px] text-center text-slate-500">
+                  {systemStatus.maintenanceMessage || "Funding is temporarily paused. Please check back shortly."}
+                </p>
+              </div>
+            )
           )}
         </form>
 

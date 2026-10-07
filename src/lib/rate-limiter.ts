@@ -1,4 +1,5 @@
 import { getDb, localStore } from "./mongodb";
+import { cache } from "./cache";
 
 export const HOURLY_LIMIT_NAIRA = 500_000_000;
 export const DAILY_MAX_TRIES = 5;
@@ -255,4 +256,8 @@ export async function recordFundingEvent(
     createdAt: now.toISOString(),
   });
   localStore.save(store);
+
+  // Invalidate cached stats and user summaries
+  cache.delete("global_stats");
+  cache.delete("user_summaries");
 }
