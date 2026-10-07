@@ -31,11 +31,18 @@ export async function POST(req: NextRequest) {
   }
 }
 
-export async function GET() {
+export async function GET(req: NextRequest) {
   const activeCount = capacityTracker.getActiveCount();
-  return NextResponse.json({
-    activeCount,
-    maxCapacity: capacityTracker.MAX_CAPACITY,
-    availableSlots: Math.max(0, capacityTracker.MAX_CAPACITY - activeCount),
-  });
+  return NextResponse.json(
+    {
+      activeCount,
+      maxCapacity: capacityTracker.MAX_CAPACITY,
+      availableSlots: Math.max(0, capacityTracker.MAX_CAPACITY - activeCount),
+    },
+    {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+      },
+    }
+  );
 }

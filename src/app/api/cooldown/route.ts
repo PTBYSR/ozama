@@ -15,9 +15,16 @@ export async function GET(req: NextRequest) {
   const cleanUser = normalizeUsername(username);
   const result = await checkRateLimit(cleanUser, 0);
 
-  return NextResponse.json({
-    ...result,
-    networkStatus: "online",
-    activeBots: 2699,
-  });
+  return NextResponse.json(
+    {
+      ...result,
+      networkStatus: "online",
+      activeBots: 2699,
+    },
+    {
+      headers: {
+        "Cache-Control": "no-store, no-cache, must-revalidate",
+      },
+    }
+  );
 }
