@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getOrder } from "@/lib/orders";
-import { processOrderBackground } from "@/lib/bot-dispatcher";
+import { advanceOrderStep } from "@/lib/bot-dispatcher";
 
 export const maxDuration = 60;
 
@@ -14,15 +14,18 @@ export async function GET(
     return NextResponse.json({ error: "Missing order ID" }, { status: 400 });
   }
 
-  const order = await getOrder(id);
+  let order = await getOrder(id);
 
   if (!order) {
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
   }
 
-  // Self-healing: if order is still active, ensure dispatcher continues running
+  // Active orders advance step-by-step on every client poll (100% resilient on serverless & Vercel)
   if (order.status !== "completed" && order.status !== "failed") {
-    processOrderBackground(id).catch(console.error);
+    const updated = await advanceOrderStep(id);
+    if (updated) {
+      order = updated;
+    }
   }
 
   return NextResponse.json({ order });

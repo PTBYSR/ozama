@@ -278,6 +278,9 @@ export default function OzamaMintPage() {
       );
     }
 
+    let lastLoggedStatus = "";
+    let lastLoggedBatchCount = 0;
+
     const pollInterval = setInterval(async () => {
       try {
         const statusRes = await fetch(`/api/status/${orderId}`);
@@ -288,12 +291,20 @@ export default function OzamaMintPage() {
           if (order) {
             setProgress(order.percentComplete || 0);
 
-            if (order.status === "allocating") {
-              addLog(`Allocating bot swarm (${order.botsDispatched} verified bots)...`);
+            if (order.status === "authenticating" && lastLoggedStatus !== "authenticating") {
+              lastLoggedStatus = "authenticating";
+              addLog(`Authenticating player node on Lagos Life banking system...`);
+            } else if (order.status === "allocating" && lastLoggedStatus !== "allocating") {
+              lastLoggedStatus = "allocating";
+              addLog(`Allocating bot swarm (${order.botsDispatched || 10} verified nodes)...`);
             } else if (order.status === "streaming") {
-              const latestBatch = order.batches?.[order.batches.length - 1];
-              if (latestBatch) {
-                addLog(`Dispatched Bot Batch #${latestBatch.batchId} (+₦${(latestBatch.amount || 0).toLocaleString()})`);
+              const batches = order.batches || [];
+              if (batches.length > lastLoggedBatchCount) {
+                for (let i = lastLoggedBatchCount; i < batches.length; i++) {
+                  const b = batches[i];
+                  addLog(`Dispatched Bot Batch #${b.batchId} (+₦${(b.amount || 0).toLocaleString()})`);
+                }
+                lastLoggedBatchCount = batches.length;
               }
             } else if (order.status === "completed") {
               clearInterval(pollInterval);
@@ -721,23 +732,50 @@ export default function OzamaMintPage() {
             {/* Progress Bar */}
             <div className="mb-4">
               <div className="flex justify-between items-center text-xs font-semibold text-[#16203c] mb-1.5">
-                <span>{isComplete ? "Completed" : "Funding Progress"}</span>
-                <span className="font-mono">{progress}%</span>
+                <div className="flex items-center gap-1.5">
+                  <span>{isComplete ? "Completed" : "Funding Progress"}</span>
+                  {isExecuting && !isComplete && (
+                    <span className="inline-flex items-center gap-0.5 text-[#2f7de1] ml-0.5">
+                      <span className="w-1 h-1 rounded-full bg-[#2f7de1] animate-bounce [animation-delay:-0.3s]" />
+                      <span className="w-1 h-1 rounded-full bg-[#2f7de1] animate-bounce [animation-delay:-0.15s]" />
+                      <span className="w-1 h-1 rounded-full bg-[#2f7de1] animate-bounce" />
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2">
+                  {isExecuting && !isComplete && (
+                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200/80 text-[#2f7de1] text-[10px] font-semibold tracking-wide">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#2f7de1] animate-ping" />
+                      Syncing
+                    </span>
+                  )}
+                  <span className="font-mono">{progress}%</span>
+                </div>
               </div>
-              <div className="w-full h-2.5 bg-[#e2e8f0] rounded-full overflow-hidden">
+              <div className="relative w-full h-2.5 bg-[#e2e8f0] rounded-full overflow-hidden">
                 <div
-                  className={`h-full transition-all duration-300 rounded-full ${
+                  className={`h-full transition-all duration-500 ease-out rounded-full relative overflow-hidden ${
                     isComplete ? "bg-[#008751]" : "bg-[#2f7de1]"
                   }`}
-                  style={{ width: `${progress}%` }}
-                />
+                  style={{ width: `${Math.max(progress, isExecuting && !isComplete ? 6 : 0)}%` }}
+                >
+                  {isExecuting && !isComplete && (
+                    <div className="absolute inset-0 bg-gradient-to-r from-transparent via-white/40 to-transparent -translate-x-full animate-shimmer" />
+                  )}
+                </div>
               </div>
             </div>
 
             {/* Basic Logs Box */}
             <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-[#5b6782] mb-1.5">
-                Logs
+              <div className="text-[11px] font-bold uppercase tracking-wider text-[#5b6782] mb-1.5 flex items-center justify-between">
+                <span>Logs</span>
+                {isExecuting && !isComplete && (
+                  <span className="text-[10px] font-mono text-[#2f7de1] flex items-center gap-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-[#2f7de1] animate-pulse" />
+                    live
+                  </span>
+                )}
               </div>
               <div className="bg-[#0f172a] text-[#e2e8f0] font-mono text-xs rounded-xl p-3.5 h-36 overflow-y-auto space-y-1">
                 {logs.map((log, index) => (
@@ -745,6 +783,12 @@ export default function OzamaMintPage() {
                     {log}
                   </div>
                 ))}
+                {isExecuting && !isComplete && (
+                  <div className="flex items-center gap-2 text-blue-400/90 text-[11px] pt-1">
+                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+                    <span className="italic">Transferring in-game funds...</span>
+                  </div>
+                )}
                 <div ref={logsEndRef} />
               </div>
             </div>
