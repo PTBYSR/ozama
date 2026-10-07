@@ -10,38 +10,40 @@ const defaultAtlasUri =
 const uri = process.env.MONGODB_URI || defaultAtlasUri;
 const dbName = process.env.MONGODB_DB || "ozama";
 
-let client: MongoClient | null = null;
-let clientPromise: Promise<MongoClient> | null = null;
 let hasSeededFromLocal = false;
+let lastError: string | null = null;
 
 declare global {
   // eslint-disable-next-line no-var
   var _mongoClientPromise: Promise<MongoClient> | undefined;
 }
 
-if (uri) {
-  if (process.env.NODE_ENV === "development") {
-    if (!global._mongoClientPromise) {
-      client = new MongoClient(uri, {
-        serverSelectionTimeoutMS: 5000,
-        maxPoolSize: 10,
-      });
-      global._mongoClientPromise = client.connect();
-    }
-    clientPromise = global._mongoClientPromise;
-  } else {
-    client = new MongoClient(uri, {
-      serverSelectionTimeoutMS: 5000,
-      maxPoolSize: 10,
-    });
-    clientPromise = client.connect();
-  }
+export function getDbDiagnostics() {
+  return {
+    hasEnvUri: !!process.env.MONGODB_URI,
+    activeDbName: dbName,
+    activeUriPrefix: uri ? uri.substring(0, 20) + "..." : "none",
+    lastError,
+  };
 }
 
 export async function getDb(): Promise<Db | null> {
-  if (!clientPromise) return null;
+  if (!uri) return null;
   try {
-    const connectedClient = await clientPromise;
+    if (!global._mongoClientPromise) {
+      const mc = new MongoClient(uri, {
+        serverSelectionTimeoutMS: 6000,
+        connectTimeoutMS: 6000,
+        maxPoolSize: 5,
+        minPoolSize: 0,
+      });
+      global._mongoClientPromise = mc.connect().catch((err) => {
+        global._mongoClientPromise = undefined;
+        throw err;
+      });
+    }
+
+    const connectedClient = await global._mongoClientPromise;
     const db = connectedClient.db(dbName);
 
     // Initial check: Seed MongoDB Atlas if collections are freshly created
@@ -52,9 +54,12 @@ export async function getDb(): Promise<Db | null> {
       );
     }
 
+    lastError = null;
     return db;
-  } catch (error) {
-    console.warn("MongoDB connection failed, falling back to local store:", error);
+  } catch (error: any) {
+    global._mongoClientPromise = undefined;
+    lastError = error?.message || String(error);
+    console.warn("MongoDB connection failed, falling back to local store:", lastError);
     return null;
   }
 }
