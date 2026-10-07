@@ -114,6 +114,7 @@ export async function sendFromBot(
 
     // Descending deltas to try on 409: adapt to server's dynamic per-account delta cap
     const deltasToTry = [
+      Math.min(amount + 500, 5_000_000),
       Math.min(amount + 500, 2_000_000),
       Math.min(amount + 500, 1_000_000),
       500_000,

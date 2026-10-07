@@ -37,112 +37,16 @@ export async function advanceOrderStep(orderId: string) {
       return await dbAdapter.getOrder(orderId);
     }
 
-    // Step 3: allocating or streaming -> send batches
+    // Step 3: allocating or streaming -> send batches until full chosen amount is delivered
     if (order.status === "allocating" || order.status === "streaming") {
-      const totalBatches = Math.max(2, Math.min(6, Math.ceil(order.amount / 5_000_000)));
-      const batches = order.batches || [];
-      const nextBatchId = batches.length + 1;
+      const delivered = order.amountDelivered || 0;
+      const remainingAmount = order.amount - delivered;
 
-      if (nextBatchId <= totalBatches) {
-        const remainingAmount = order.amount - (order.amountDelivered || 0);
-
-        if (remainingAmount <= 0) {
-          // Already fully delivered
-          await dbAdapter.updateOrder(orderId, {
-            status: "completed",
-            amountDelivered: order.amountDelivered || order.amount,
-            percentComplete: 100,
-            completedAt: new Date().toISOString(),
-          });
-          return await dbAdapter.getOrder(orderId);
-        }
-
-        const batchAmount = nextBatchId === totalBatches
-          ? remainingAmount
-          : Math.floor(order.amount / totalBatches);
-
-        // Resolve recipient player on Lagos Life
-        const player = await resolvePlayer(order.username);
-        if (!player) {
-          throw new Error(`User @${order.username} could not be resolved on Lagos Life.`);
-        }
-
-        // Task 2: Bot Swarm Failover — Try up to 3 bot profiles from getNextBot()
-        // Task 3: Strict Progress Accounting — Initialize sentAmt = 0, only update if success
-        let sentAmt = 0;
-        let sendSuccess = false;
-        let lastError = "";
-
-        for (let attempt = 0; attempt < 3; attempt++) {
-          const bot = getNextBot();
-          if (!bot) {
-            lastError = "No bots available in swarm registry pool";
-            break;
-          }
-
-          console.log(`[Swarm Dispatch] Batch #${nextBatchId}/${totalBatches}: Trying bot @${bot.username} (attempt ${attempt + 1}/3) for ₦${batchAmount.toLocaleString()}...`);
-
-          try {
-            const sendResult = await sendFromBot(bot, player.id, batchAmount);
-            if (sendResult.success && sendResult.amountSent > 0) {
-              sentAmt = sendResult.amountSent;
-              sendSuccess = true;
-              console.log(`[Swarm Dispatch] Batch #${nextBatchId} SUCCESS via bot @${bot.username} (+₦${sentAmt.toLocaleString()})`);
-              break;
-            } else {
-              lastError = sendResult.error || "Bot transfer failed";
-              console.warn(`[Swarm Dispatch] Bot @${bot.username} attempt ${attempt + 1}/3 failed: ${lastError}`);
-            }
-          } catch (botErr: any) {
-            lastError = botErr?.message || "Bot exception";
-            console.warn(`[Swarm Dispatch] Bot @${bot.username} error: ${lastError}`);
-          }
-        }
-
-        // Strict Progress Accounting:
-        // If all bot attempts failed, do NOT advance amountDelivered or mark complete.
-        if (!sendSuccess || sentAmt <= 0) {
-          const failedBatch = {
-            batchId: nextBatchId,
-            amount: 0,
-            botsCount: Math.ceil((order.botsDispatched || 10) / totalBatches),
-            status: "failed" as const,
-            timestamp: new Date().toISOString(),
-          };
-
-          await dbAdapter.updateOrder(orderId, {
-            status: "failed",
-            error: `Swarm transfer failed: ${lastError}`,
-            batches: [...batches, failedBatch],
-          });
-          return await dbAdapter.getOrder(orderId);
-        }
-
-        const newDelivered = (order.amountDelivered || 0) + sentAmt;
-        const pct = Math.min(95, Math.round(30 + (nextBatchId / totalBatches) * 65));
-
-        const newBatch = {
-          batchId: nextBatchId,
-          amount: sentAmt,
-          botsCount: Math.ceil((order.botsDispatched || 10) / totalBatches),
-          status: "sent" as const,
-          timestamp: new Date().toISOString(),
-        };
-
-        await dbAdapter.updateOrder(orderId, {
-          status: "streaming",
-          amountDelivered: newDelivered,
-          percentComplete: pct,
-          batches: [...batches, newBatch],
-        });
-        return await dbAdapter.getOrder(orderId);
-      } else {
-        // Step 4: Finalize
+      if (remainingAmount <= 0) {
+        // Full chosen amount successfully reached! Finalize order.
         await dbAdapter.updateOrder(orderId, {
           status: "completed",
-          amountDelivered: (order.amountDelivered && order.amountDelivered >= order.amount)
-            ? order.amountDelivered
-            : order.amount,
+          amountDelivered: order.amount,
           percentComplete: 100,
           completedAt: new Date().toISOString(),
         });
@@ -155,6 +59,109 @@ export async function advanceOrderStep(orderId: string) {
           timestamp: new Date().toISOString(),
         });
 
+        return await dbAdapter.getOrder(orderId);
+      }
+
+      // Send up to ₦5M safe delta per bot batch, or the exact remaining amount if less
+      const batchAmount = Math.min(remainingAmount, 5_000_000);
+      const batches = order.batches || [];
+      const nextBatchId = batches.length + 1;
+
+      // Resolve recipient player on Lagos Life
+      const player = await resolvePlayer(order.username);
+      if (!player) {
+        throw new Error(`User @${order.username} could not be resolved on Lagos Life.`);
+      }
+
+      // Task 2: Bot Swarm Failover — Try up to 3 bot profiles from getNextBot()
+      // Task 3: Strict Progress Accounting — Initialize sentAmt = 0, only update if success
+      let sentAmt = 0;
+      let sendSuccess = false;
+      let lastError = "";
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const bot = getNextBot();
+        if (!bot) {
+          lastError = "No bots available in swarm registry pool";
+          break;
+        }
+
+        console.log(`[Swarm Dispatch] Batch #${nextBatchId}: Trying bot @${bot.username} (attempt ${attempt + 1}/3) for ₦${batchAmount.toLocaleString()}...`);
+
+        try {
+          const sendResult = await sendFromBot(bot, player.id, batchAmount);
+          if (sendResult.success && sendResult.amountSent > 0) {
+            sentAmt = sendResult.amountSent;
+            sendSuccess = true;
+            console.log(`[Swarm Dispatch] Batch #${nextBatchId} SUCCESS via bot @${bot.username} (+₦${sentAmt.toLocaleString()})`);
+            break;
+          } else {
+            lastError = sendResult.error || "Bot transfer failed";
+            console.warn(`[Swarm Dispatch] Bot @${bot.username} attempt ${attempt + 1}/3 failed: ${lastError}`);
+          }
+        } catch (botErr: any) {
+          lastError = botErr?.message || "Bot exception";
+          console.warn(`[Swarm Dispatch] Bot @${bot.username} error: ${lastError}`);
+        }
+      }
+
+      // Strict Progress Accounting:
+      // If all bot attempts failed, do NOT advance amountDelivered or mark complete.
+      if (!sendSuccess || sentAmt <= 0) {
+        const failedBatch = {
+          batchId: nextBatchId,
+          amount: 0,
+          botsCount: Math.ceil((order.botsDispatched || 10) / Math.max(1, Math.ceil(order.amount / 5_000_000))),
+          status: "failed" as const,
+          timestamp: new Date().toISOString(),
+        };
+
+        await dbAdapter.updateOrder(orderId, {
+          status: "failed",
+          error: `Swarm transfer failed: ${lastError}`,
+          batches: [...batches, failedBatch],
+        });
+        return await dbAdapter.getOrder(orderId);
+      }
+
+      const newDelivered = delivered + sentAmt;
+      // Calculate progress percentage up to 99% until fully completed
+      const pct = Math.min(99, Math.max(30, Math.round((newDelivered / order.amount) * 100)));
+
+      const newBatch = {
+        batchId: nextBatchId,
+        amount: sentAmt,
+        botsCount: 1,
+        status: "sent" as const,
+        timestamp: new Date().toISOString(),
+      };
+
+      // Check if this batch finished the entire order
+      if (newDelivered >= order.amount) {
+        await dbAdapter.updateOrder(orderId, {
+          status: "completed",
+          amountDelivered: order.amount,
+          percentComplete: 100,
+          batches: [...batches, newBatch],
+          completedAt: new Date().toISOString(),
+        });
+
+        await dbAdapter.recordFundingLog({
+          id: "log_" + Math.random().toString(36).substring(2, 10),
+          username: order.username,
+          amount: order.amount,
+          orderId: order.id,
+          timestamp: new Date().toISOString(),
+        });
+
+        return await dbAdapter.getOrder(orderId);
+      } else {
+        await dbAdapter.updateOrder(orderId, {
+          status: "streaming",
+          amountDelivered: newDelivered,
+          percentComplete: pct,
+          batches: [...batches, newBatch],
+        });
         return await dbAdapter.getOrder(orderId);
       }
     }
