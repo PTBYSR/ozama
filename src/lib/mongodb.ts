@@ -7,7 +7,10 @@ import { cache, CACHE_TTL } from "./cache";
 const defaultAtlasUri =
   "mongodb+srv://garygresham23_db_user:garygresham23_db_user_new@aq81bxg.mongodb.net/ozama?authSource=admin&retryWrites=true&w=majority";
 
-const uri = process.env.MONGODB_URI || defaultAtlasUri;
+const rawEnvUri = (process.env.MONGODB_URI || "").trim();
+// Ignore expired/broken legacy 'babani' cluster that causes SSL errors on Vercel
+const uri =
+  rawEnvUri && !rawEnvUri.includes("babani") ? rawEnvUri : defaultAtlasUri;
 const dbName = process.env.MONGODB_DB || "ozama";
 
 let hasSeededFromLocal = false;
