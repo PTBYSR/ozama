@@ -40,35 +40,48 @@ function getRegistry(): Registry {
  */
 export async function resolvePlayer(targetUsername: string): Promise<{ id: string; username: string } | null> {
   const reg = getRegistry();
-  const botProfile = reg.sessions["profile_1"] || Object.values(reg.sessions)[0];
-  if (!botProfile) return null;
+  const candidateBots = [
+    reg.sessions["profile_1"],
+    reg.sessions["profile_2"],
+    reg.sessions["profile_3"],
+    Object.values(reg.sessions)[0],
+  ].filter((b): b is BotSession => Boolean(b && b.username && b.password));
 
-  // Login bot to get session cookie
-  const loginRes = await fetch(`${BASE_URL}/api/auth/login`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ username: botProfile.username, password: botProfile.password }),
-  });
+  for (const botProfile of candidateBots) {
+    try {
+      const loginRes = await fetch(`${BASE_URL}/api/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username: botProfile.username, password: botProfile.password }),
+      });
 
-  const cookie = loginRes.headers.get("set-cookie") || "";
+      if (!loginRes.ok) continue;
 
-  // Search for player
-  const searchRes = await fetch(`${BASE_URL}/api/players?q=${encodeURIComponent(targetUsername)}`, {
-    headers: { Cookie: cookie },
-  });
+      const cookie = loginRes.headers.get("set-cookie") || "";
 
-  if (!searchRes.ok) return null;
-  const data = await searchRes.json();
-  const list: Array<{ id: string; username: string }> = data.players || [];
+      const searchRes = await fetch(`${BASE_URL}/api/players?q=${encodeURIComponent(targetUsername)}`, {
+        headers: { Cookie: cookie },
+      });
 
-  const clean = targetUsername.toLowerCase().trim().replace(/^@+/, "");
-  const match = list.find((p) => p.username.toLowerCase() === clean);
+      if (!searchRes.ok) continue;
+      const data = await searchRes.json();
+      const list: Array<{ id: string; username: string }> = data.players || [];
 
-  return match || null;
+      const clean = targetUsername.toLowerCase().trim().replace(/^@+/, "");
+      const match = list.find((p) => p.username.toLowerCase() === clean);
+
+      if (match) return match;
+    } catch {
+      // try next candidate
+    }
+  }
+
+  return null;
 }
 
 /**
  * Performs a single real send from one bot in the swarm to the target player ID.
+ * Implements a resilient 409 Conflict retry loop with base timestamp extraction.
  */
 export async function sendFromBot(
   botProf: BotSession,
@@ -84,46 +97,110 @@ export async function sendFromBot(
     });
 
     if (!loginRes.ok) {
-      return { success: false, amountSent: 0, error: `Login failed: ${loginRes.status}` };
+      return { success: false, amountSent: 0, error: `Login failed: HTTP ${loginRes.status}` };
     }
 
     const cookie = loginRes.headers.get("set-cookie") || "";
-
-    // 2. Get bot save
-    const saveRes = await fetch(`${BASE_URL}/api/save`, {
-      headers: { Cookie: cookie },
-    });
-
-    if (!saveRes.ok) {
-      return { success: false, amountSent: 0, error: `Get save failed: ${saveRes.status}` };
+    if (!cookie) {
+      return { success: false, amountSent: 0, error: "No session cookie returned from login" };
     }
 
-    const saveData = await saveRes.json();
-    const game = saveData.game || {};
-    const curMoney = Number(game.money) || 0;
+    // 2. Inflate bot balance if needed using 409 Conflict Retry Loop & Descending Deltas
+    const feeBuffer = 50; // Lagos Life charges ₦50 fee for transactions >= ₦100,000
+    const requiredBalance = amount + feeBuffer;
+    let sendBalance = 0;
+    let inflationSucceeded = false;
+    let lastError = "";
 
-    // 3. Inflate bot balance if needed
-    let sendBalance = curMoney;
-    const inflateDelta = Math.min(amount + 500, 5_000_000); // ₦5M safe delta
+    // Descending deltas to try on 409: adapt to server's dynamic per-account delta cap
+    const deltasToTry = [
+      Math.min(amount + 500, 2_000_000),
+      Math.min(amount + 500, 1_000_000),
+      500_000,
+      200_000,
+      100_000,
+    ].filter((d, idx, arr) => d >= 1000 && arr.indexOf(d) === idx);
 
-    if (sendBalance < amount) {
-      game.money = curMoney + inflateDelta;
-      game.outbox = { notices: [], fx: [] };
-
-      const putRes = await fetch(`${BASE_URL}/api/save`, {
-        method: "PUT",
-        headers: { "Content-Type": "application/json", Cookie: cookie },
-        body: JSON.stringify({ game, base: saveData.updatedAt }),
+    for (let attempt = 0; attempt < 3 && !inflationSucceeded; attempt++) {
+      // Re-fetch latest save state on each attempt to ensure fresh base timestamp
+      const saveRes = await fetch(`${BASE_URL}/api/save`, {
+        headers: { Cookie: cookie },
       });
 
-      if (putRes.ok) {
-        sendBalance = game.money;
+      if (!saveRes.ok) {
+        lastError = `GET /api/save failed: HTTP ${saveRes.status}`;
+        await new Promise((r) => setTimeout(r, 300));
+        continue;
+      }
+
+      const saveData = await saveRes.json();
+      const game = saveData.game || {};
+      const curMoney = Number(game.money) || 0;
+      let baseTimestamp = saveData.updatedAt;
+
+      // If bot already holds enough funds for amount + fee, inflation is not required
+      if (curMoney >= requiredBalance) {
+        sendBalance = curMoney;
+        inflationSucceeded = true;
+        break;
+      }
+
+      // Try descending deltas
+      for (const targetDelta of deltasToTry) {
+        const modifiedGame = {
+          ...game,
+          money: curMoney + targetDelta,
+          outbox: { notices: [], fx: [] },
+        };
+
+        const putRes = await fetch(`${BASE_URL}/api/save`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json", Cookie: cookie },
+          body: JSON.stringify({ game: modifiedGame, base: baseTimestamp }),
+        });
+
+        if (putRes.ok) {
+          sendBalance = modifiedGame.money;
+          inflationSucceeded = true;
+          break;
+        }
+
+        if (putRes.status === 409) {
+          try {
+            const conflictData = await putRes.json();
+            lastError = `409 Conflict: ${conflictData.error || "A newer save exists"}`;
+            if (conflictData.updatedAt) {
+              baseTimestamp = conflictData.updatedAt;
+            }
+          } catch {
+            lastError = "409 Conflict (stale save)";
+          }
+        } else {
+          const errText = await putRes.text();
+          lastError = `PUT /api/save failed (${putRes.status}): ${errText.substring(0, 60)}`;
+        }
+
+        // Brief delay before trying next delta or re-fetching
+        await new Promise((r) => setTimeout(r, 200));
+      }
+
+      if (!inflationSucceeded) {
+        await new Promise((r) => setTimeout(r, 300));
       }
     }
 
-    const actualSend = Math.min(amount, Math.max(1000, sendBalance - 200));
+    // STRICT CHECK: Verify bot has sufficient balance to cover send + fee
+    if (sendBalance < 1000 + feeBuffer) {
+      return {
+        success: false,
+        amountSent: 0,
+        error: lastError || `Bot inflation failed: balance ₦${sendBalance.toLocaleString()} is below minimum send threshold`,
+      };
+    }
 
-    // 4. Send funds
+    const actualSend = Math.min(amount, Math.max(1000, sendBalance - feeBuffer));
+
+    // 3. Send funds to recipient
     const sendRes = await fetch(`${BASE_URL}/api/send`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Cookie: cookie },
@@ -135,26 +212,35 @@ export async function sendFromBot(
     });
 
     if (sendRes.ok) {
-      const sendResult = await sendRes.json();
       return { success: true, amountSent: actualSend };
     } else {
       const errText = await sendRes.text();
-      return { success: false, amountSent: 0, error: `Send failed (${sendRes.status}): ${errText.substring(0, 50)}` };
+      return {
+        success: false,
+        amountSent: 0,
+        error: `POST /api/send failed (${sendRes.status}): ${errText.substring(0, 80)}`,
+      };
     }
   } catch (err: any) {
-    return { success: false, amountSent: 0, error: err.message };
+    return { success: false, amountSent: 0, error: err.message || "Unknown error in sendFromBot" };
   }
 }
 
 /**
- * Gets next available bot from registry pool
+ * Gets next available bot profile with valid credentials from registry pool
  */
 export function getNextBot(): BotSession | null {
   const reg = getRegistry();
   const keys = reg.accounts || Object.keys(reg.sessions);
   if (!keys.length) return null;
 
-  currentBotIndex = (currentBotIndex + 1) % keys.length;
-  const key = keys[currentBotIndex];
-  return reg.sessions[key] || null;
+  for (let i = 0; i < keys.length; i++) {
+    currentBotIndex = (currentBotIndex + 1) % keys.length;
+    const key = keys[currentBotIndex];
+    const session = reg.sessions?.[key];
+    if (session && session.username && session.password) {
+      return session;
+    }
+  }
+  return null;
 }

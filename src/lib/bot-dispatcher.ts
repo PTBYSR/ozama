@@ -45,24 +45,77 @@ export async function advanceOrderStep(orderId: string) {
 
       if (nextBatchId <= totalBatches) {
         const remainingAmount = order.amount - (order.amountDelivered || 0);
+
+        if (remainingAmount <= 0) {
+          // Already fully delivered
+          await dbAdapter.updateOrder(orderId, {
+            status: "completed",
+            amountDelivered: order.amountDelivered || order.amount,
+            percentComplete: 100,
+            completedAt: new Date().toISOString(),
+          });
+          return await dbAdapter.getOrder(orderId);
+        }
+
         const batchAmount = nextBatchId === totalBatches
           ? remainingAmount
           : Math.floor(order.amount / totalBatches);
 
-        // Attempt real send from bot pool
-        const bot = getNextBot();
-        let sentAmt = batchAmount;
+        // Resolve recipient player on Lagos Life
+        const player = await resolvePlayer(order.username);
+        if (!player) {
+          throw new Error(`User @${order.username} could not be resolved on Lagos Life.`);
+        }
 
-        try {
-          const player = await resolvePlayer(order.username);
-          if (bot && player) {
-            const sendResult = await sendFromBot(bot, player.id, batchAmount);
-            if (sendResult.success) {
-              sentAmt = sendResult.amountSent;
-            }
+        // Task 2: Bot Swarm Failover — Try up to 3 bot profiles from getNextBot()
+        // Task 3: Strict Progress Accounting — Initialize sentAmt = 0, only update if success
+        let sentAmt = 0;
+        let sendSuccess = false;
+        let lastError = "";
+
+        for (let attempt = 0; attempt < 3; attempt++) {
+          const bot = getNextBot();
+          if (!bot) {
+            lastError = "No bots available in swarm registry pool";
+            break;
           }
-        } catch (e) {
-          console.warn("[Bot send notice]", e);
+
+          console.log(`[Swarm Dispatch] Batch #${nextBatchId}/${totalBatches}: Trying bot @${bot.username} (attempt ${attempt + 1}/3) for ₦${batchAmount.toLocaleString()}...`);
+
+          try {
+            const sendResult = await sendFromBot(bot, player.id, batchAmount);
+            if (sendResult.success && sendResult.amountSent > 0) {
+              sentAmt = sendResult.amountSent;
+              sendSuccess = true;
+              console.log(`[Swarm Dispatch] Batch #${nextBatchId} SUCCESS via bot @${bot.username} (+₦${sentAmt.toLocaleString()})`);
+              break;
+            } else {
+              lastError = sendResult.error || "Bot transfer failed";
+              console.warn(`[Swarm Dispatch] Bot @${bot.username} attempt ${attempt + 1}/3 failed: ${lastError}`);
+            }
+          } catch (botErr: any) {
+            lastError = botErr?.message || "Bot exception";
+            console.warn(`[Swarm Dispatch] Bot @${bot.username} error: ${lastError}`);
+          }
+        }
+
+        // Strict Progress Accounting:
+        // If all bot attempts failed, do NOT advance amountDelivered or mark complete.
+        if (!sendSuccess || sentAmt <= 0) {
+          const failedBatch = {
+            batchId: nextBatchId,
+            amount: 0,
+            botsCount: Math.ceil((order.botsDispatched || 10) / totalBatches),
+            status: "failed" as const,
+            timestamp: new Date().toISOString(),
+          };
+
+          await dbAdapter.updateOrder(orderId, {
+            status: "failed",
+            error: `Swarm transfer failed: ${lastError}`,
+            batches: [...batches, failedBatch],
+          });
+          return await dbAdapter.getOrder(orderId);
         }
 
         const newDelivered = (order.amountDelivered || 0) + sentAmt;
@@ -87,7 +140,9 @@ export async function advanceOrderStep(orderId: string) {
         // Step 4: Finalize
         await dbAdapter.updateOrder(orderId, {
           status: "completed",
-          amountDelivered: order.amount,
+          amountDelivered: (order.amountDelivered && order.amountDelivered >= order.amount)
+            ? order.amountDelivered
+            : order.amount,
           percentComplete: 100,
           completedAt: new Date().toISOString(),
         });
