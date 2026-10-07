@@ -256,6 +256,154 @@ export default function OzamaMintPage() {
     setIsNoticeOpen(true);
   };
 
+  // Reusable order polling & progress listener (persists to localStorage)
+  const startOrderPolling = (
+    orderId: string,
+    targetUser: string,
+    windowSeconds: number,
+    optionId?: string
+  ) => {
+    setIsExecuting(true);
+    setIsComplete(false);
+
+    if (typeof window !== "undefined") {
+      localStorage.setItem(
+        "ozama_active_order",
+        JSON.stringify({
+          orderId,
+          username: targetUser,
+          windowSeconds,
+          optionId: optionId || selectedOption.id,
+        })
+      );
+    }
+
+    const pollInterval = setInterval(async () => {
+      try {
+        const statusRes = await fetch(`/api/status/${orderId}`);
+        if (statusRes.ok) {
+          const statusData = await statusRes.json();
+          const order = statusData.order;
+
+          if (order) {
+            setProgress(order.percentComplete || 0);
+
+            if (order.status === "allocating") {
+              addLog(`Allocating bot swarm (${order.botsDispatched} verified bots)...`);
+            } else if (order.status === "streaming") {
+              const latestBatch = order.batches?.[order.batches.length - 1];
+              if (latestBatch) {
+                addLog(`Dispatched Bot Batch #${latestBatch.batchId} (+₦${(latestBatch.amount || 0).toLocaleString()})`);
+              }
+            } else if (order.status === "completed") {
+              clearInterval(pollInterval);
+              setProgress(100);
+              setIsExecuting(false);
+              setIsComplete(true);
+              setCooldownRemaining(windowSeconds);
+              addLog(`✓ Funds delivered! ₦${(order.amount || selectedOption.amount).toLocaleString()} credited to @${targetUser}.`);
+              addLog(`(Ensure player has Lagos Life open to auto-sync bank balance).`);
+              fetchStats();
+
+              if (typeof window !== "undefined") {
+                localStorage.setItem(
+                  "ozama_active_order",
+                  JSON.stringify({
+                    orderId,
+                    username: targetUser,
+                    windowSeconds,
+                    optionId: optionId || selectedOption.id,
+                    completedAt: Date.now(),
+                  })
+                );
+              }
+            } else if (order.status === "failed") {
+              clearInterval(pollInterval);
+              setIsExecuting(false);
+              setErrorMsg(order.error || "Funding failed.");
+              addLog(`Failed: ${order.error || "Unknown server error"}`);
+              if (typeof window !== "undefined") {
+                localStorage.removeItem("ozama_active_order");
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore transient poll error
+      }
+    }, 1000);
+  };
+
+  // Auto-resume active or completed session on page reload / reopen
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      const raw = localStorage.getItem("ozama_active_order");
+      if (!raw) return;
+      const saved = JSON.parse(raw);
+      if (!saved.orderId || !saved.username) return;
+
+      const resumeSavedSession = async () => {
+        try {
+          const res = await fetch(`/api/status/${saved.orderId}`);
+          if (!res.ok) {
+            localStorage.removeItem("ozama_active_order");
+            return;
+          }
+          const data = await res.json();
+          const order = data.order;
+          if (!order) return;
+
+          setUsername(order.username);
+          setVerifiedUser(order.username);
+
+          if (saved.optionId) {
+            const opt = OPTIONS.find((o) => o.id === saved.optionId);
+            if (opt) setSelectedOption(opt);
+          }
+
+          if (order.status === "completed") {
+            const completedTime = order.completedAt
+              ? new Date(order.completedAt).getTime()
+              : saved.completedAt || Date.now();
+            const elapsed = Math.floor((Date.now() - completedTime) / 1000);
+            const remaining = Math.max(0, (saved.windowSeconds || 7200) - elapsed);
+
+            if (remaining > 0) {
+              setIsExecuting(false);
+              setIsComplete(true);
+              setProgress(100);
+              setCooldownRemaining(remaining);
+              addLog(`Resumed session for @${order.username}`);
+              addLog(`✓ Funds delivered! ₦${(order.amount || 0).toLocaleString()} credited.`);
+              addLog(`(Ensure player has Lagos Life open to auto-sync bank balance).`);
+            } else {
+              localStorage.removeItem("ozama_active_order");
+            }
+          } else if (order.status === "failed") {
+            localStorage.removeItem("ozama_active_order");
+          } else {
+            // Actively in progress: resume progress bar and live polling
+            setIsExecuting(true);
+            setIsComplete(false);
+            setProgress(order.percentComplete || 20);
+            addLog(`Resumed live funding session for @${order.username}...`);
+            if (order.batches?.length > 0) {
+              addLog(`Active disbursement: ${order.batches.length} bot batch(es) completed.`);
+            }
+            startOrderPolling(saved.orderId, order.username, saved.windowSeconds || 7200, saved.optionId);
+          }
+        } catch {
+          // keep existing state
+        }
+      };
+
+      resumeSavedSession();
+    } catch {
+      localStorage.removeItem("ozama_active_order");
+    }
+  }, []);
+
   // User confirms in-game notice modal -> execute funding
   const handleFinalExecute = async () => {
     setIsNoticeOpen(false);
@@ -301,56 +449,14 @@ export default function OzamaMintPage() {
       setProgress(25);
 
       const orderId = data.order?.id;
-      let pollCount = 0;
-
-      const pollInterval = setInterval(async () => {
-        pollCount++;
-        try {
-          if (!orderId) {
-            clearInterval(pollInterval);
-            setIsExecuting(false);
-            setIsComplete(true);
-            setCooldownRemaining(selectedOption.windowSeconds);
-            fetchStats();
-            return;
-          }
-
-          const statusRes = await fetch(`/api/status/${orderId}`);
-          if (statusRes.ok) {
-            const statusData = await statusRes.json();
-            const order = statusData.order;
-
-            if (order) {
-              setProgress(order.percentComplete || 0);
-
-              if (order.status === "allocating") {
-                addLog(`Allocating bot swarm (${order.botsDispatched} verified bots)...`);
-              } else if (order.status === "streaming") {
-                const latestBatch = order.batches?.[order.batches.length - 1];
-                if (latestBatch) {
-                  addLog(`Dispatched Bot Batch #${latestBatch.batchId} (+₦${(latestBatch.amount || 0).toLocaleString()})`);
-                }
-              } else if (order.status === "completed") {
-                clearInterval(pollInterval);
-                setProgress(100);
-                setIsExecuting(false);
-                setIsComplete(true);
-                setCooldownRemaining(selectedOption.windowSeconds);
-                addLog(`✓ Funds delivered! ₦${selectedOption.amount.toLocaleString()} credited to @${targetUser}.`);
-                addLog(`(Ensure player has Lagos Life open to auto-sync bank balance).`);
-                fetchStats(); // Update corner stats immediately
-              } else if (order.status === "failed") {
-                clearInterval(pollInterval);
-                setIsExecuting(false);
-                setErrorMsg(order.error || "Funding failed.");
-                addLog(`Failed: ${order.error || "Unknown server error"}`);
-              }
-            }
-          }
-        } catch {
-          // ignore transient poll error
-        }
-      }, 1000);
+      if (orderId) {
+        startOrderPolling(orderId, targetUser, selectedOption.windowSeconds, selectedOption.id);
+      } else {
+        setIsExecuting(false);
+        setIsComplete(true);
+        setCooldownRemaining(selectedOption.windowSeconds);
+        fetchStats();
+      }
 
     } catch (err: any) {
       setIsExecuting(false);
@@ -362,6 +468,9 @@ export default function OzamaMintPage() {
   // Reset form once cooldown is elapsed
   const handleReset = () => {
     if (cooldownRemaining > 0) return;
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("ozama_active_order");
+    }
     setIsExecuting(false);
     setIsComplete(false);
     setProgress(0);
@@ -371,6 +480,9 @@ export default function OzamaMintPage() {
 
   // Switch to different user
   const handleSwitchUser = () => {
+    if (typeof window !== "undefined") {
+      localStorage.removeItem("ozama_active_order");
+    }
     setIsExecuting(false);
     setIsComplete(false);
     setProgress(0);
