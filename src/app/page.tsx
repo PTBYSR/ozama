@@ -818,15 +818,15 @@ export default function OzamaMintPage() {
         </div>
       )}
 
-      {/* Confirmation Modal 2: Note on Lagos Life Game Balance */}
+      {/* Confirmation Modal 2: Note for Your Funding to Work */}
       {isNoticeOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/40 backdrop-blur-xs animate-in fade-in duration-150">
           <div className="w-full max-w-sm bg-white rounded-3xl p-6 shadow-2xl border border-slate-100 animate-in zoom-in-95 duration-150">
             <h3 className="font-display text-xl font-bold text-[#16203c] mb-2">
-              Note on Lagos Life Game Balance
+              Note for Your Funding to Work
             </h3>
             <p className="text-sm text-[#5b6782] mb-6 leading-relaxed">
-              In Lagos Life, incoming transfers are sent via the in-game banking network. Have the player open the game / phone messages so the game client registers and syncs the new funds.
+              In the Lagos Life game, you need to keep your game open and check your phone messages (in the game as well) so that the funding can work properly.
             </p>
             <div className="flex gap-2.5">
               <button
