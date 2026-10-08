@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getOrder } from "@/lib/orders";
-import { advanceOrderStep, resumeOrder } from "@/lib/bot-dispatcher";
+import { advanceOrderStep, resumeOrder, cancelOrder } from "@/lib/bot-dispatcher";
 
 export const maxDuration = 60;
 
@@ -16,11 +16,17 @@ export async function GET(
 
   const { searchParams } = new URL(req.url);
   const isResume = searchParams.get("action") === "resume";
+  const isCancel = searchParams.get("action") === "cancel";
 
   let order = await getOrder(id);
 
   if (!order) {
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  }
+
+  if (isCancel) {
+    const cancelled = await cancelOrder(id);
+    return NextResponse.json({ order: cancelled, cancelled: true });
   }
 
   if (isResume && order.status === "failed") {

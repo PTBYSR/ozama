@@ -209,3 +209,15 @@ export async function resumeOrder(orderId: string) {
   return await dbAdapter.getOrder(orderId);
 }
 
+export async function cancelOrder(orderId: string) {
+  const order = await dbAdapter.getOrder(orderId);
+  if (!order || order.status === "completed") {
+    return order;
+  }
+  await dbAdapter.updateOrder(orderId, {
+    status: "failed",
+    error: "Funding cancelled by user.",
+  });
+  return await dbAdapter.getOrder(orderId);
+}
+

@@ -570,16 +570,32 @@ export default function OzamaPage() {
     }
   };
 
-  // Cancel active funding in progress
+  // Cancel active funding in progress - cancel completely and go directly back to setup form
   const handleCancelFunding = () => {
     if (pollIntervalRef.current) {
       clearInterval(pollIntervalRef.current);
       pollIntervalRef.current = null;
     }
+    if (activeOrderId) {
+      fetch(`/api/status/${activeOrderId}?action=cancel`).catch(() => {});
+    }
+    if (typeof window !== "undefined") {
+      try {
+        const url = new URL(window.location.href);
+        url.searchParams.delete("order");
+        window.history.replaceState({}, "", url.pathname + (url.search ? url.search : ""));
+      } catch {
+        // ignore
+      }
+    }
     setIsExecuting(false);
-    setIsFailed(true);
-    setErrorMsg("Funding was stopped. Any funds already delivered to your account remain safe.");
-    addLog("Funding stopped by user. Delivered funds are safe.");
+    setIsComplete(false);
+    setIsFailed(false);
+    setActiveOrderId(null);
+    setProgress(0);
+    setLogs([]);
+    setErrorMsg(null);
+    setCooldownRemaining(0);
   };
 
   // Reset view to reopen username and funding option UI
