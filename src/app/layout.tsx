@@ -14,9 +14,35 @@ const plusJakartaSans = Plus_Jakarta_Sans({
   variable: "--font-sans",
 });
 
+const FIRE_EMOJI_SVG =
+  "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>";
+
 export const metadata: Metadata = {
   title: "Ozama 🔥 — Lagos Life Minting",
   description: "Official Lagos Life automated funding portal.",
+  icons: {
+    icon: [
+      {
+        url: FIRE_EMOJI_SVG,
+        type: "image/svg+xml",
+      },
+      {
+        url: "/favicon.ico",
+        sizes: "any",
+      },
+    ],
+    shortcut: FIRE_EMOJI_SVG,
+    apple: [
+      {
+        url: FIRE_EMOJI_SVG,
+        type: "image/svg+xml",
+      },
+    ],
+  },
+  openGraph: {
+    title: "Ozama 🔥 — Lagos Life Minting",
+    description: "Official Lagos Life automated funding portal.",
+  },
 };
 
 export default function RootLayout({
@@ -29,6 +55,10 @@ export default function RootLayout({
       lang="en"
       className={`${fredoka.variable} ${plusJakartaSans.variable} h-full antialiased`}
     >
+      <head>
+        <link rel="icon" href={FIRE_EMOJI_SVG} type="image/svg+xml" />
+        <link rel="apple-touch-icon" href={FIRE_EMOJI_SVG} />
+      </head>
       <body className="min-h-dvh overflow-x-hidden antialiased">{children}</body>
     </html>
   );
