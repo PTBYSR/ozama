@@ -74,9 +74,11 @@ export default function OzamaMintPage() {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
   const logsEndRef = useRef<HTMLDivElement | null>(null);
+  const [showLogs, setShowLogs] = useState(false);
 
   // Username validation regex: 3-24 alphanumeric or underscore
-  const isUsernameValid = /^[a-zA-Z0-9_]{3,24}$/.test(username.trim().replace(/^@+/, ""));
+  const targetHandle = (verifiedUser || username).trim().replace(/^@+/, "");
+  const isUsernameValid = /^[a-zA-Z0-9_]{3,24}$/.test(targetHandle);
 
   // Swarm Activity Status (Live vs Down)
   const [systemStatus, setSystemStatus] = useState<{ isLive: boolean; maintenanceMessage?: string }>({
@@ -801,10 +803,18 @@ export default function OzamaMintPage() {
         {(isExecuting || isComplete || logs.length > 0) && (
           <div className="mt-6 pt-6 border-t border-[#e2e8f0]">
             {/* Progress Bar */}
-            <div className="mb-4">
+            <div className="mb-3">
               <div className="flex justify-between items-center text-xs font-semibold text-[#16203c] mb-1.5">
                 <div className="flex items-center gap-1.5">
-                  <span>{isComplete ? "Completed" : "Funding Progress"}</span>
+                  <span className="truncate max-w-[240px]">
+                    {isComplete
+                      ? targetHandle
+                        ? `Funded @${targetHandle}`
+                        : "Completed"
+                      : targetHandle
+                      ? `Funding @${targetHandle}`
+                      : "Funding Progress"}
+                  </span>
                   {isExecuting && !isComplete && (
                     <span className="inline-flex items-center gap-0.5 text-[#2f7de1] ml-0.5">
                       <span className="w-1 h-1 rounded-full bg-[#2f7de1] animate-bounce [animation-delay:-0.3s]" />
@@ -814,16 +824,10 @@ export default function OzamaMintPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
-                  {isExecuting && !isComplete && (
-                    <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-blue-50 border border-blue-200/80 text-[#2f7de1] text-[10px] font-semibold tracking-wide">
-                      <span className="w-1.5 h-1.5 rounded-full bg-[#2f7de1] animate-ping" />
-                      Syncing
-                    </span>
-                  )}
-                  <span className="font-mono">{progress}%</span>
+                  <span className="font-mono text-xs font-bold text-[#16203c]">{progress}%</span>
                 </div>
               </div>
-              <div className="relative w-full h-2.5 bg-[#e2e8f0] rounded-full overflow-hidden">
+              <div className="relative w-full h-2 bg-[#e2e8f0] rounded-full overflow-hidden">
                 <div
                   className={`h-full transition-all duration-500 ease-out rounded-full relative overflow-hidden ${
                     isComplete ? "bg-[#008751]" : "bg-[#2f7de1]"
@@ -837,31 +841,57 @@ export default function OzamaMintPage() {
               </div>
             </div>
 
-            {/* Basic Logs Box */}
-            <div>
-              <div className="text-[11px] font-bold uppercase tracking-wider text-[#5b6782] mb-1.5 flex items-center justify-between">
-                <span>Logs</span>
-                {isExecuting && !isComplete && (
-                  <span className="text-[10px] font-mono text-[#2f7de1] flex items-center gap-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-[#2f7de1] animate-pulse" />
-                    live
-                  </span>
-                )}
-              </div>
-              <div className="bg-[#0f172a] text-[#e2e8f0] font-mono text-xs rounded-xl p-3.5 h-36 overflow-y-auto space-y-1">
-                {logs.map((log, index) => (
-                  <div key={index} className="leading-relaxed">
-                    {log}
-                  </div>
-                ))}
-                {isExecuting && !isComplete && (
-                  <div className="flex items-center gap-2 text-blue-400/90 text-[11px] pt-1">
-                    <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
-                    <span className="italic">Transferring in-game funds...</span>
-                  </div>
-                )}
-                <div ref={logsEndRef} />
-              </div>
+            {/* Collapsible Subtle Logs */}
+            <div className="mt-2.5">
+              <button
+                type="button"
+                onClick={() => setShowLogs(!showLogs)}
+                className="w-full flex items-center justify-between py-1.5 px-2 rounded-lg bg-slate-50/80 hover:bg-slate-100/80 border border-slate-200/60 transition-colors select-none text-left"
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-[10px] font-bold tracking-wider uppercase text-slate-500">Activity Logs</span>
+                  {logs.length > 0 && (
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full bg-slate-200/70 text-slate-600 font-mono font-medium">
+                      {logs.length}
+                    </span>
+                  )}
+                  {isExecuting && !isComplete && (
+                    <span className="flex items-center gap-1 text-[10px] font-mono text-[#2f7de1]">
+                      <span className="w-1.5 h-1.5 rounded-full bg-[#2f7de1] animate-pulse" />
+                      live
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-1 text-[11px] text-slate-400 font-medium">
+                  <span>{showLogs ? "Hide" : "Show"}</span>
+                  <svg
+                    className={`w-3.5 h-3.5 transition-transform duration-200 text-slate-400 ${showLogs ? "rotate-180" : ""}`}
+                    fill="none"
+                    viewBox="0 0 24 24"
+                    stroke="currentColor"
+                    strokeWidth={2}
+                  >
+                    <path strokeLinecap="round" strokeLinejoin="round" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </div>
+              </button>
+
+              {showLogs && (
+                <div className="mt-1.5 bg-[#0b1329] border border-slate-800/80 text-slate-300 font-mono text-[11px] rounded-xl p-3 max-h-32 overflow-y-auto space-y-1 shadow-inner">
+                  {logs.map((log, index) => (
+                    <div key={index} className="leading-relaxed text-slate-300">
+                      {log}
+                    </div>
+                  ))}
+                  {isExecuting && !isComplete && (
+                    <div className="flex items-center gap-2 text-blue-400/90 text-[10px] pt-1">
+                      <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-ping" />
+                      <span className="italic">Transferring in-game funds...</span>
+                    </div>
+                  )}
+                  <div ref={logsEndRef} />
+                </div>
+              )}
             </div>
 
             {/* Post-Completion Controls */}
