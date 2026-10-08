@@ -28,7 +28,7 @@ export async function advanceOrderStep(orderId: string) {
         throw new Error(`User @${order.username} not found on Lagos Life servers.`);
       }
 
-      const botsNeeded = Math.min(TOTAL_BOT_POOL, Math.max(1, Math.ceil(order.amount / 5_000_000)));
+      const botsNeeded = Math.min(TOTAL_BOT_POOL, Math.max(1, Math.ceil(order.amount / 500_000)));
       await dbAdapter.updateOrder(orderId, {
         status: "allocating",
         botsDispatched: botsNeeded,
@@ -62,8 +62,8 @@ export async function advanceOrderStep(orderId: string) {
         return await dbAdapter.getOrder(orderId);
       }
 
-      // Send up to ₦5M safe delta per bot batch, or the exact remaining amount if less
-      const batchAmount = Math.min(remainingAmount, 5_000_000);
+      // Send up to ₦500k safe delta per bot batch, or the exact remaining amount if less
+      const batchAmount = Math.min(remainingAmount, 500_000);
       const batches = order.batches || [];
       const nextBatchId = batches.length + 1;
 

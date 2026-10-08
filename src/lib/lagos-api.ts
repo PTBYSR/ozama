@@ -112,12 +112,11 @@ export async function sendFromBot(
     let inflationSucceeded = false;
     let lastError = "";
 
-    // Descending deltas to try on 409: adapt to server's dynamic per-account delta cap
+    // Descending deltas to try on 409: capped at ₦500,000 to comply with server anti-cheat
     const deltasToTry = [
-      Math.min(amount + 500, 5_000_000),
-      Math.min(amount + 500, 2_000_000),
-      Math.min(amount + 500, 1_000_000),
-      500_000,
+      Math.min(amount + feeBuffer, 500_000),
+      400_000,
+      300_000,
       200_000,
       100_000,
     ].filter((d, idx, arr) => d >= 1000 && arr.indexOf(d) === idx);
