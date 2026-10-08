@@ -47,6 +47,7 @@ export default function OzamaMintPage() {
   const [isVerifying, setIsVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
   const [userLimitNotice, setUserLimitNotice] = useState<string | null>(null);
+  const [userCooldownSeconds, setUserCooldownSeconds] = useState<number>(0);
 
   // Anti-bot wall states
   const [honeypot, setHoneypot] = useState("");
@@ -84,8 +85,8 @@ export default function OzamaMintPage() {
   const targetHandle = (verifiedUser || username).trim().replace(/^@+/, "");
   const isUsernameValid = /^[a-zA-Z0-9_]{3,24}$/.test(targetHandle);
 
-  // Active funding state flag (determines if progress view replaces setup form)
-  const isFundingActive = isExecuting || isComplete || isFailed;
+  // Active funding or cooldown state (removes setup form and displays only the funding progress section)
+  const isFundingActive = isExecuting || isFailed || cooldownRemaining > 0;
 
   // Swarm Activity Status (Live vs Down)
   const [systemStatus, setSystemStatus] = useState<{ isLive: boolean; maintenanceMessage?: string }>({
@@ -223,6 +224,7 @@ export default function OzamaMintPage() {
         if (data.exists && data.player) {
           setVerifiedUser(data.player.username);
           setVerifyError(null);
+          setUserCooldownSeconds(data.cooldownSeconds || 0);
           if (data.limitReason) {
             setUserLimitNotice(data.limitReason);
           } else {
@@ -231,12 +233,14 @@ export default function OzamaMintPage() {
         } else {
           setVerifiedUser(null);
           setUserLimitNotice(null);
+          setUserCooldownSeconds(0);
           setVerifyError(data.error || "This account does not exist on Lagos Life. Please check the spelling.");
         }
       } catch (err: any) {
         if (err.name !== "AbortError") {
           setVerifiedUser(null);
           setUserLimitNotice(null);
+          setUserCooldownSeconds(0);
           setVerifyError("Could not connect to Lagos Life right now. Please try again in a moment.");
         }
       } finally {
@@ -274,7 +278,26 @@ export default function OzamaMintPage() {
 
   // Cooldown countdown timer interval
   useEffect(() => {
-    if (cooldownRemaining <= 0) return;
+    if (cooldownRemaining <= 0) {
+      if (isComplete) {
+        // Once cooldown is over, automatically reappear the username & funding option UI!
+        setIsComplete(false);
+        setActiveOrderId(null);
+        setProgress(0);
+        setErrorMsg(null);
+        if (typeof window !== "undefined") {
+          try {
+            const url = new URL(window.location.href);
+            url.searchParams.delete("order");
+            window.history.replaceState({}, "", url.pathname + (url.search ? url.search : ""));
+          } catch {
+            // ignore
+          }
+        }
+      }
+      return;
+    }
+
     const timer = setInterval(() => {
       setCooldownRemaining((prev) => {
         if (prev <= 1) {
@@ -285,7 +308,7 @@ export default function OzamaMintPage() {
       });
     }, 1000);
     return () => clearInterval(timer);
-  }, [cooldownRemaining]);
+  }, [cooldownRemaining, isComplete]);
 
   // Execute button clicked -> show confirmation modal
   const handleExecuteClick = (e: React.FormEvent) => {
@@ -308,6 +331,12 @@ export default function OzamaMintPage() {
       return;
     }
     if (userLimitNotice) {
+      if (userCooldownSeconds > 0) {
+        setCooldownRemaining(userCooldownSeconds);
+        setIsComplete(true);
+        setProgress(100);
+        return;
+      }
       setErrorMsg(userLimitNotice);
       return;
     }
@@ -439,12 +468,21 @@ export default function OzamaMintPage() {
             const elapsed = Math.floor((Date.now() - completedTime) / 1000);
             const remaining = Math.max(0, winSecs - elapsed);
 
-            setIsExecuting(false);
-            setIsComplete(true);
-            setIsFailed(false);
-            setProgress(100);
-            setCooldownRemaining(remaining);
-            addLog(`✓ Funds delivered! ₦${(order.amount || 0).toLocaleString()} credited to @${order.username}.`);
+            if (remaining > 0) {
+              setIsExecuting(false);
+              setIsComplete(true);
+              setIsFailed(false);
+              setProgress(100);
+              setCooldownRemaining(remaining);
+              addLog(`✓ Funds delivered! ₦${(order.amount || 0).toLocaleString()} credited to @${order.username}.`);
+            } else {
+              // Cooldown already finished: Reopen setup form directly
+              setIsExecuting(false);
+              setIsComplete(false);
+              setIsFailed(false);
+              setProgress(0);
+              setCooldownRemaining(0);
+            }
           } else if (order.status === "failed") {
             setIsExecuting(false);
             setIsFailed(true);
@@ -566,6 +604,7 @@ export default function OzamaMintPage() {
     setProgress(0);
     setLogs([]);
     setErrorMsg(null);
+    setCooldownRemaining(0);
   };
 
   // Switch to different user
