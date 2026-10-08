@@ -90,34 +90,67 @@ export default function OzamaPage() {
 
   // Fullscreen In-Game Monitor Alert (2 seconds after funding starts)
   const [showGamePromptModal, setShowGamePromptModal] = useState(false);
-  // Fullscreen Reminder Modal (after 40 seconds of viewing funding screen)
+  // Fullscreen Reminder Modal (30 seconds after user closes first prompt modal)
   const [showGameReminderModal, setShowGameReminderModal] = useState(false);
+  const reminderTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const isExecutingRef = useRef(false);
+  const isCompleteRef = useRef(false);
 
-  // In-Game Monitor Prompts & Timers
+  useEffect(() => {
+    isExecutingRef.current = isExecuting;
+    isCompleteRef.current = isComplete;
+  }, [isExecuting, isComplete]);
+
+  // Initial 2-second in-game monitor alert
   useEffect(() => {
     let twoSecTimer: NodeJS.Timeout | null = null;
-    let fortySecTimer: NodeJS.Timeout | null = null;
 
     if (isExecuting && !isComplete) {
-      // After 2 seconds of starting funding, open popup covering the whole screen
       twoSecTimer = setTimeout(() => {
-        setShowGamePromptModal(true);
+        if (isExecutingRef.current && !isCompleteRef.current) {
+          setShowGamePromptModal(true);
+        }
       }, 2000);
-
-      // If viewer stays on this screen for 40 seconds, remind them that Lagos Life must be open
-      fortySecTimer = setTimeout(() => {
-        setShowGameReminderModal(true);
-      }, 40000);
     } else {
+      // Once completed or halted, force-close all modals and clear pending reminder timers
       setShowGamePromptModal(false);
       setShowGameReminderModal(false);
+      if (reminderTimerRef.current) {
+        clearTimeout(reminderTimerRef.current);
+        reminderTimerRef.current = null;
+      }
     }
 
     return () => {
       if (twoSecTimer) clearTimeout(twoSecTimer);
-      if (fortySecTimer) clearTimeout(fortySecTimer);
     };
   }, [isExecuting, isComplete]);
+
+  // Close First Prompt Modal & Start 30s Countdown for Second Reminder
+  const handleClosePromptModal = () => {
+    setShowGamePromptModal(false);
+    if (reminderTimerRef.current) {
+      clearTimeout(reminderTimerRef.current);
+      reminderTimerRef.current = null;
+    }
+    // Only schedule 30s reminder if funding is actively in flight
+    if (isExecutingRef.current && !isCompleteRef.current) {
+      reminderTimerRef.current = setTimeout(() => {
+        if (isExecutingRef.current && !isCompleteRef.current) {
+          setShowGameReminderModal(true);
+        }
+      }, 30000);
+    }
+  };
+
+  // Close Second Reminder Modal
+  const handleCloseReminderModal = () => {
+    setShowGameReminderModal(false);
+    if (reminderTimerRef.current) {
+      clearTimeout(reminderTimerRef.current);
+      reminderTimerRef.current = null;
+    }
+  };
 
   // Swarm Activity Status (Live vs Down, plus Global Kill Switch)
   const [systemStatus, setSystemStatus] = useState<{
@@ -1305,10 +1338,20 @@ export default function OzamaPage() {
         </div>
       )}
 
-      {/* MODAL 1: 2-Second Prompt Modal (Fullscreen Notification to Open Game & Monitor) */}
+      {/* MODAL 1: 2-Second Prompt Modal (Translucent Backdrop, X Close Button, Single Centered Action Button) */}
       {showGamePromptModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0a101d]/85 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="w-full max-w-sm sm:max-w-md bg-white rounded-3xl p-6 sm:p-8 shadow-2xl border border-slate-100 text-center space-y-5 animate-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/45 backdrop-blur-[2px] transition-all animate-in fade-in duration-200">
+          <div className="w-full max-w-sm sm:max-w-md bg-white rounded-3xl p-6 sm:p-8 shadow-2xl border border-slate-100 text-center space-y-5 animate-in zoom-in-95 duration-200 relative">
+            {/* Top-Right X Close Button */}
+            <button
+              type="button"
+              onClick={handleClosePromptModal}
+              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center text-sm font-bold transition-all cursor-pointer"
+              title="Close modal"
+            >
+              ✕
+            </button>
+
             <div className="w-16 h-16 mx-auto rounded-3xl bg-emerald-500/10 border border-emerald-500/20 text-3xl flex items-center justify-center shadow-inner animate-bounce">
               🎮
             </div>
@@ -1327,33 +1370,37 @@ export default function OzamaPage() {
               💡 <strong>Quick Note:</strong> In-game banking requires your game app to be open so phone messages and wallet deposits sync immediately.
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+            {/* Single Centered Button */}
+            <div className="pt-1 flex justify-center">
               <a
                 href="https://lagoslife.eliysites.com"
                 target="_blank"
                 rel="noopener noreferrer"
-                onClick={() => setShowGamePromptModal(false)}
-                className="flex-1 py-3 px-4 rounded-full lagos-button text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md cursor-pointer text-center"
+                onClick={handleClosePromptModal}
+                className="w-full py-3.5 px-6 rounded-full lagos-button text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 shadow-md cursor-pointer text-center"
               >
-                <span>Open Lagos Life</span>
+                <span>Go to Lagos Life Game</span>
                 <span>↗</span>
               </a>
-              <button
-                type="button"
-                onClick={() => setShowGamePromptModal(false)}
-                className="flex-1 py-3 px-4 rounded-full border border-[#d5dde6] hover:bg-slate-50 text-[#16203c] text-xs font-bold uppercase tracking-wider transition-colors cursor-pointer"
-              >
-                I'm In Game
-              </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* MODAL 2: 40-Second Inactivity / Reminder Modal */}
+      {/* MODAL 2: 30-Second Follow-up Reminder Modal */}
       {showGameReminderModal && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0a101d]/85 backdrop-blur-md animate-in fade-in duration-200">
-          <div className="w-full max-w-sm sm:max-w-md bg-white rounded-3xl p-6 sm:p-8 shadow-2xl border border-amber-500/30 text-center space-y-5 animate-in zoom-in-95 duration-200">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/45 backdrop-blur-[2px] transition-all animate-in fade-in duration-200">
+          <div className="w-full max-w-sm sm:max-w-md bg-white rounded-3xl p-6 sm:p-8 shadow-2xl border border-amber-500/30 text-center space-y-5 animate-in zoom-in-95 duration-200 relative">
+            {/* Top-Right X Close Button */}
+            <button
+              type="button"
+              onClick={handleCloseReminderModal}
+              className="absolute top-4 right-4 w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-800 flex items-center justify-center text-sm font-bold transition-all cursor-pointer"
+              title="Close modal"
+            >
+              ✕
+            </button>
+
             <div className="w-16 h-16 mx-auto rounded-3xl bg-amber-500/10 border border-amber-500/30 text-3xl flex items-center justify-center shadow-inner">
               ⚡
             </div>
@@ -1371,24 +1418,18 @@ export default function OzamaPage() {
               ⚠️ For the funding to deliver properly, switch to your Lagos Life game now and check your in-game messages.
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+            {/* Single Centered Button */}
+            <div className="pt-1 flex justify-center">
               <a
                 href="https://lagoslife.eliysites.com"
                 target="_blank"
                 rel="noopener noreferrer"
-                onClick={() => setShowGameReminderModal(false)}
-                className="flex-1 py-3 px-4 rounded-full lagos-button text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md cursor-pointer text-center"
+                onClick={handleCloseReminderModal}
+                className="w-full py-3.5 px-6 rounded-full lagos-button text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-2 shadow-md cursor-pointer text-center"
               >
-                <span>Switch to Lagos Life</span>
+                <span>Go to Lagos Life Game</span>
                 <span>↗</span>
               </a>
-              <button
-                type="button"
-                onClick={() => setShowGameReminderModal(false)}
-                className="flex-1 py-3 px-4 rounded-full border border-[#d5dde6] hover:bg-slate-50 text-[#16203c] text-xs font-bold uppercase tracking-wider transition-colors cursor-pointer"
-              >
-                I Understand, Game is Open
-              </button>
             </div>
           </div>
         </div>
