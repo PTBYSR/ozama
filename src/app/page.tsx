@@ -88,6 +88,37 @@ export default function OzamaPage() {
   // Active funding or cooldown state (removes setup form and displays only the funding progress section)
   const isFundingActive = isExecuting || isFailed || cooldownRemaining > 0;
 
+  // Fullscreen In-Game Monitor Alert (2 seconds after funding starts)
+  const [showGamePromptModal, setShowGamePromptModal] = useState(false);
+  // Fullscreen Reminder Modal (after 40 seconds of viewing funding screen)
+  const [showGameReminderModal, setShowGameReminderModal] = useState(false);
+
+  // In-Game Monitor Prompts & Timers
+  useEffect(() => {
+    let twoSecTimer: NodeJS.Timeout | null = null;
+    let fortySecTimer: NodeJS.Timeout | null = null;
+
+    if (isExecuting && !isComplete) {
+      // After 2 seconds of starting funding, open popup covering the whole screen
+      twoSecTimer = setTimeout(() => {
+        setShowGamePromptModal(true);
+      }, 2000);
+
+      // If viewer stays on this screen for 40 seconds, remind them that Lagos Life must be open
+      fortySecTimer = setTimeout(() => {
+        setShowGameReminderModal(true);
+      }, 40000);
+    } else {
+      setShowGamePromptModal(false);
+      setShowGameReminderModal(false);
+    }
+
+    return () => {
+      if (twoSecTimer) clearTimeout(twoSecTimer);
+      if (fortySecTimer) clearTimeout(fortySecTimer);
+    };
+  }, [isExecuting, isComplete]);
+
   // Swarm Activity Status (Live vs Down, plus Global Kill Switch)
   const [systemStatus, setSystemStatus] = useState<{
     isLive: boolean;
@@ -605,6 +636,8 @@ export default function OzamaPage() {
     setLogs([]);
     setErrorMsg(null);
     setCooldownRemaining(0);
+    setShowGamePromptModal(false);
+    setShowGameReminderModal(false);
   };
 
   // Reset view to reopen username and funding option UI
@@ -630,6 +663,8 @@ export default function OzamaPage() {
     setLogs([]);
     setErrorMsg(null);
     setCooldownRemaining(0);
+    setShowGamePromptModal(false);
+    setShowGameReminderModal(false);
   };
 
   // Switch to different user
@@ -655,6 +690,8 @@ export default function OzamaPage() {
     setVerifyError(null);
     setIsVerifying(false);
     setCooldownRemaining(0);
+    setShowGamePromptModal(false);
+    setShowGameReminderModal(false);
   };
 
   // Resume paused order from last batch
@@ -1262,6 +1299,95 @@ export default function OzamaPage() {
                 className="flex-1 py-2.5 rounded-full lagos-button text-xs font-semibold cursor-pointer"
               >
                 Proceed
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 1: 2-Second Prompt Modal (Fullscreen Notification to Open Game & Monitor) */}
+      {showGamePromptModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0a101d]/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-sm sm:max-w-md bg-white rounded-3xl p-6 sm:p-8 shadow-2xl border border-slate-100 text-center space-y-5 animate-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 mx-auto rounded-3xl bg-emerald-500/10 border border-emerald-500/20 text-3xl flex items-center justify-center shadow-inner animate-bounce">
+              🎮
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="font-display text-xl sm:text-2xl font-bold text-[#16203c] tracking-tight">
+                Funding In Progress!
+              </h3>
+              <p className="text-xs sm:text-sm text-[#5b6782] leading-relaxed">
+                <strong className="text-[#16203c] font-semibold">@{targetHandle}</strong> is currently being funded.
+                Go to your Lagos Life game now and monitor the funds entering your account in real-time!
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-[#f8fafd] border border-[#d5dde6] text-xs text-[#16203c] font-medium leading-relaxed">
+              💡 <strong>Quick Note:</strong> In-game banking requires your game app to be open so phone messages and wallet deposits sync immediately.
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+              <a
+                href="https://lagoslife.eliysites.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setShowGamePromptModal(false)}
+                className="flex-1 py-3 px-4 rounded-full lagos-button text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md cursor-pointer text-center"
+              >
+                <span>Open Lagos Life</span>
+                <span>↗</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => setShowGamePromptModal(false)}
+                className="flex-1 py-3 px-4 rounded-full border border-[#d5dde6] hover:bg-slate-50 text-[#16203c] text-xs font-bold uppercase tracking-wider transition-colors cursor-pointer"
+              >
+                I'm In Game
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL 2: 40-Second Inactivity / Reminder Modal */}
+      {showGameReminderModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-[#0a101d]/85 backdrop-blur-md animate-in fade-in duration-200">
+          <div className="w-full max-w-sm sm:max-w-md bg-white rounded-3xl p-6 sm:p-8 shadow-2xl border border-amber-500/30 text-center space-y-5 animate-in zoom-in-95 duration-200">
+            <div className="w-16 h-16 mx-auto rounded-3xl bg-amber-500/10 border border-amber-500/30 text-3xl flex items-center justify-center shadow-inner">
+              ⚡
+            </div>
+
+            <div className="space-y-2">
+              <h3 className="font-display text-xl sm:text-2xl font-bold text-[#16203c] tracking-tight">
+                Keep Lagos Life Open!
+              </h3>
+              <p className="text-xs sm:text-sm text-[#5b6782] leading-relaxed">
+                You are still viewing this screen. If you are not inside the Lagos Life game, your account might not sync the incoming transfers!
+              </p>
+            </div>
+
+            <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-xs text-amber-900 font-medium leading-relaxed">
+              ⚠️ For the funding to deliver properly, switch to your Lagos Life game now and check your in-game messages.
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-2.5 pt-1">
+              <a
+                href="https://lagoslife.eliysites.com"
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={() => setShowGameReminderModal(false)}
+                className="flex-1 py-3 px-4 rounded-full lagos-button text-xs font-bold uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md cursor-pointer text-center"
+              >
+                <span>Switch to Lagos Life</span>
+                <span>↗</span>
+              </a>
+              <button
+                type="button"
+                onClick={() => setShowGameReminderModal(false)}
+                className="flex-1 py-3 px-4 rounded-full border border-[#d5dde6] hover:bg-slate-50 text-[#16203c] text-xs font-bold uppercase tracking-wider transition-colors cursor-pointer"
+              >
+                I Understand, Game is Open
               </button>
             </div>
           </div>
