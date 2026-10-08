@@ -78,6 +78,28 @@ export async function checkRateLimit(
     try {
       const collection = db.collection("funding_events");
 
+      // Guard 1: In-Flight Active Order Lock (Prevents race conditions, multi-device & double submits)
+      const activeOrder = await db.collection("orders").findOne({
+        username,
+        status: { $in: ["queued", "authenticating", "allocating", "streaming"] },
+      });
+
+      if (activeOrder) {
+        return {
+          username,
+          hourlyLimit: HOURLY_LIMIT_NAIRA,
+          usedLastHour: 0,
+          remainingAllowed: 0,
+          canFund: false,
+          cooldownSeconds: 60,
+          cooldownFormatted: "Transfer in progress",
+          dailyTriesUsed: 0,
+          dailyTriesRemaining: DAILY_MAX_TRIES,
+          dailyLimitReached: false,
+          reason: `A transfer is currently in progress for @${username}. Please wait small for it to finish.`,
+        };
+      }
+
       // Check all events in last 24h for daily tries limit
       const dailyEvents = await collection
         .find({
@@ -105,7 +127,7 @@ export async function checkRateLimit(
           dailyTriesUsed: dailyCount,
           dailyTriesRemaining: 0,
           dailyLimitReached: true,
-          reason: `Daily limit reached: Maximum ${DAILY_MAX_TRIES} funding tries per day.`,
+          reason: `Daily limit reached: You have used your 5 funding tries for today on @${username}. Please try again tomorrow.`,
         };
       }
 
@@ -146,7 +168,9 @@ export async function checkRateLimit(
         dailyTriesUsed: dailyCount,
         dailyTriesRemaining,
         dailyLimitReached: false,
-        reason: isCooldown ? `Cooldown active for this tier.` : undefined,
+        reason: isCooldown
+          ? `Cooldown active: Please wait ${formatSeconds(cooldownSeconds)} before funding @${username} again.`
+          : undefined,
       };
     } catch (err) {
       console.warn("MongoDB checkRateLimit error, falling back to local store:", err);
@@ -155,6 +179,29 @@ export async function checkRateLimit(
 
   // Fallback to local store
   const store = localStore.get();
+
+  const activeOrder = store.orders.find(
+    (o) =>
+      o.username === username &&
+      ["queued", "authenticating", "allocating", "streaming"].includes(o.status)
+  );
+
+  if (activeOrder) {
+    return {
+      username,
+      hourlyLimit: HOURLY_LIMIT_NAIRA,
+      usedLastHour: 0,
+      remainingAllowed: 0,
+      canFund: false,
+      cooldownSeconds: 60,
+      cooldownFormatted: "Transfer in progress",
+      dailyTriesUsed: 0,
+      dailyTriesRemaining: DAILY_MAX_TRIES,
+      dailyLimitReached: false,
+      reason: `A transfer is currently in progress for @${username}. Please wait small for it to finish.`,
+    };
+  }
+
   const dailyEvents = store.funding_events.filter((ev) => {
     return (
       ev.username === username &&
@@ -179,7 +226,7 @@ export async function checkRateLimit(
       dailyTriesUsed: dailyCount,
       dailyTriesRemaining: 0,
       dailyLimitReached: true,
-      reason: `Daily limit reached: Maximum ${DAILY_MAX_TRIES} funding tries per day.`,
+      reason: `Daily limit reached: You have used your 5 funding tries for today on @${username}. Please try again tomorrow.`,
     };
   }
 
@@ -219,7 +266,9 @@ export async function checkRateLimit(
     dailyTriesUsed: dailyCount,
     dailyTriesRemaining,
     dailyLimitReached: false,
-    reason: isCooldown ? `Cooldown active for this tier.` : undefined,
+    reason: isCooldown
+      ? `Cooldown active: Please wait ${formatSeconds(cooldownSeconds)} before funding @${username} again.`
+      : undefined,
   };
 }
 

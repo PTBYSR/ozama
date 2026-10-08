@@ -2,7 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { checkRateLimit, normalizeUsername, isValidUsername } from "@/lib/rate-limiter";
 import { createOrder } from "@/lib/orders";
 import { antiBot } from "@/lib/anti-bot";
-import { dbAdapter } from "@/lib/mongodb";
+import { dbAdapter, getDb, localStore } from "@/lib/mongodb";
 
 export const maxDuration = 60;
 
@@ -31,7 +31,7 @@ export async function POST(req: NextRequest) {
     const ipCheck = antiBot.checkIpRate(ip, 8);
     if (!ipCheck.allowed) {
       return NextResponse.json(
-        { error: `Too many requests from this network. Retry in ${ipCheck.retryAfterSeconds}s.` },
+        { error: `Too many attempts from your network. Please wait ${ipCheck.retryAfterSeconds}s and try again.` },
         { status: 429 }
       );
     }
@@ -46,7 +46,7 @@ export async function POST(req: NextRequest) {
     });
     if (!botCheck.passed) {
       return NextResponse.json(
-        { error: botCheck.reason || "Anti-bot verification failed." },
+        { error: "Security check failed. Please refresh the page and try again." },
         { status: 403 }
       );
     }
@@ -58,7 +58,7 @@ export async function POST(req: NextRequest) {
 
     if (!isValidUsername(username)) {
       return NextResponse.json(
-        { error: "Invalid username. Must be 3–24 characters (letters, numbers, underscores)." },
+        { error: "Invalid username. Lagos Life usernames are 3–24 characters (letters, numbers, underscores)." },
         { status: 400 }
       );
     }
@@ -66,12 +66,34 @@ export async function POST(req: NextRequest) {
     const option = ALLOWED_OPTIONS[amount];
     if (!option) {
       return NextResponse.json(
-        { error: "Invalid option selected. Choose 50M, 25M, or 10M." },
+        { error: "Please select a funding option (50M, 25M, or 10M)." },
         { status: 400 }
       );
     }
 
-    // 3. Check rate limits (Daily 5 tries limit & Tier cooldown window)
+    // 3. Global Swarm Concurrency Guard (max 3 active swarm transfers at once)
+    const db = await getDb();
+    let activeSwarmCount = 0;
+    if (db) {
+      activeSwarmCount = await db.collection("orders").countDocuments({
+        status: { $in: ["queued", "authenticating", "allocating", "streaming"] },
+      });
+    } else {
+      activeSwarmCount = localStore.get().orders.filter((o) =>
+        ["queued", "authenticating", "allocating", "streaming"].includes(o.status)
+      ).length;
+    }
+
+    if (activeSwarmCount >= 3) {
+      return NextResponse.json(
+        {
+          error: "The swarm is currently busy funding other accounts. Please wait small and try again.",
+        },
+        { status: 503 }
+      );
+    }
+
+    // 4. Check rate limits (In-Flight Order Lock, Daily 5 tries limit & Tier cooldown window)
     const limitStatus = await checkRateLimit(username, amount, option.windowSeconds);
 
     if (!limitStatus.canFund) {
@@ -92,7 +114,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 4. Create and dispatch order
+    // 5. Create and dispatch order
     const order = await createOrder(username, amount);
 
     return NextResponse.json({
@@ -104,7 +126,7 @@ export async function POST(req: NextRequest) {
   } catch (error: any) {
     console.error("Fund API error:", error);
     return NextResponse.json(
-      { error: "Internal server error processing minting" },
+      { error: "Could not start funding right now. Please try again in a moment." },
       { status: 500 }
     );
   }

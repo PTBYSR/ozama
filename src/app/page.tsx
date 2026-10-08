@@ -46,6 +46,7 @@ export default function OzamaMintPage() {
   const [verifiedUser, setVerifiedUser] = useState<string | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
   const [verifyError, setVerifyError] = useState<string | null>(null);
+  const [userLimitNotice, setUserLimitNotice] = useState<string | null>(null);
 
   // Anti-bot wall states
   const [honeypot, setHoneypot] = useState("");
@@ -191,12 +192,14 @@ export default function OzamaMintPage() {
       setVerifiedUser(null);
       setIsVerifying(false);
       setVerifyError(null);
+      setUserLimitNotice(null);
       return;
     }
 
     if (!/^[a-zA-Z0-9_]{3,24}$/.test(clean)) {
       setVerifiedUser(null);
       setIsVerifying(false);
+      setUserLimitNotice(null);
       setVerifyError("Username must be 3–24 letters, numbers, or underscores.");
       return;
     }
@@ -204,6 +207,7 @@ export default function OzamaMintPage() {
     setIsVerifying(true);
     setVerifyError(null);
     setVerifiedUser(null);
+    setUserLimitNotice(null);
 
     const controller = new AbortController();
     const timeout = setTimeout(async () => {
@@ -215,14 +219,21 @@ export default function OzamaMintPage() {
         if (data.exists && data.player) {
           setVerifiedUser(data.player.username);
           setVerifyError(null);
+          if (data.limitReason) {
+            setUserLimitNotice(data.limitReason);
+          } else {
+            setUserLimitNotice(null);
+          }
         } else {
           setVerifiedUser(null);
-          setVerifyError(data.error || "Player not found on Lagos Life");
+          setUserLimitNotice(null);
+          setVerifyError(data.error || "This account does not exist on Lagos Life. Please check the spelling.");
         }
       } catch (err: any) {
         if (err.name !== "AbortError") {
           setVerifiedUser(null);
-          setVerifyError("Unable to verify player account.");
+          setUserLimitNotice(null);
+          setVerifyError("Could not connect to Lagos Life right now. Please try again in a moment.");
         }
       } finally {
         setIsVerifying(false);
@@ -284,12 +295,16 @@ export default function OzamaMintPage() {
     }
     if (!verifiedUser) {
       if (isVerifying) {
-        setErrorMsg("Verifying player on Lagos Life, please wait...");
+        setErrorMsg("Checking player on Lagos Life, please wait small...");
       } else if (verifyError) {
         setErrorMsg(verifyError);
       } else {
         setErrorMsg("Please enter a valid Lagos Life username.");
       }
+      return;
+    }
+    if (userLimitNotice) {
+      setErrorMsg(userLimitNotice);
       return;
     }
     setErrorMsg(null);
@@ -706,11 +721,14 @@ export default function OzamaMintPage() {
                   const val = e.target.value;
                   setUsername(val);
                   if (errorMsg) setErrorMsg(null);
+                  if (userLimitNotice) setUserLimitNotice(null);
                 }}
                 placeholder="lagoslife_username"
                 className={`w-full bg-[#f8fafd] border rounded-2xl pl-8 pr-10 py-3 text-sm font-semibold text-[#16203c] placeholder:text-[#94a3b8] focus:outline-none transition-all ${
                   verifyError && username.trim().length >= 3
                     ? "border-red-400 focus:border-red-500 bg-red-50/20"
+                    : verifiedUser && userLimitNotice
+                    ? "border-amber-400 focus:border-amber-500 bg-amber-50/20"
                     : verifiedUser
                     ? "border-[#008751] focus:border-[#008751] bg-[#f0fbf5]/40"
                     : "border-[#d5dde6] focus:border-[#2f7de1]"
@@ -739,8 +757,11 @@ export default function OzamaMintPage() {
                     />
                   </svg>
                 )}
-                {!isVerifying && verifiedUser && (
+                {!isVerifying && verifiedUser && !userLimitNotice && (
                   <span className="text-sm text-[#008751] font-bold">✓</span>
+                )}
+                {!isVerifying && verifiedUser && userLimitNotice && (
+                  <span className="text-sm text-amber-600 font-bold">⏳</span>
                 )}
                 {!isVerifying && verifyError && username.trim().length >= 3 && (
                   <span className="text-sm text-red-500 font-bold">✕</span>
@@ -755,9 +776,14 @@ export default function OzamaMintPage() {
                 Checking player on Lagos Life...
               </p>
             )}
-            {!isVerifying && verifiedUser && (
+            {!isVerifying && verifiedUser && !userLimitNotice && (
               <p className="mt-1.5 text-xs text-[#008751] font-medium flex items-center gap-1.5 animate-in fade-in duration-150">
                 <span>✓</span> Player verified: <strong className="font-semibold">@{verifiedUser}</strong>
+              </p>
+            )}
+            {!isVerifying && verifiedUser && userLimitNotice && (
+              <p className="mt-1.5 text-xs text-amber-600 font-medium flex items-center gap-1.5 animate-in fade-in duration-150">
+                <span>⏳</span> {userLimitNotice}
               </p>
             )}
             {!isVerifying && verifyError && username.trim().length >= 3 && (
@@ -951,8 +977,8 @@ export default function OzamaMintPage() {
                     </h4>
                     <p className="text-xs text-amber-800 leading-relaxed">
                       {errorMsg?.includes("409")
-                        ? "A bot encountered a game save conflict (409 Conflict). Any batches already delivered are safely saved on your account. Click Resume to continue."
-                        : errorMsg || "Transfer interrupted. Delivered funds are safe. Click Resume to continue."}
+                        ? "Transfer paused because of Lagos Life network delay. Don't worry, all money already sent to your account is safe! Tap Resume below to continue."
+                        : errorMsg || "Transfer paused. Delivered funds are safe. Tap Resume below to continue."}
                     </p>
                   </div>
                 </div>
