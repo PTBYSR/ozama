@@ -7,7 +7,7 @@ import { dbAdapter } from "@/lib/mongodb";
 export const maxDuration = 60;
 
 const ALLOWED_OPTIONS: Record<number, { windowSeconds: number; label: string }> = {
-  500_000_000: { windowSeconds: 7200, label: "500M (2 Hours)" },
+  50_000_000: { windowSeconds: 7200, label: "50M (2 Hours)" },
   25_000_000: { windowSeconds: 3600, label: "25M (1 Hour)" },
   10_000_000: { windowSeconds: 1800, label: "10M (30 Min)" },
 };
@@ -66,7 +66,7 @@ export async function POST(req: NextRequest) {
     const option = ALLOWED_OPTIONS[amount];
     if (!option) {
       return NextResponse.json(
-        { error: "Invalid option selected. Choose 500M, 25M, or 10M." },
+        { error: "Invalid option selected. Choose 50M, 25M, or 10M." },
         { status: 400 }
       );
     }

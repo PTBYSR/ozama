@@ -1,7 +1,7 @@
 import { getDb, localStore } from "./mongodb";
 import { cache } from "./cache";
 
-export const HOURLY_LIMIT_NAIRA = 500_000_000;
+export const HOURLY_LIMIT_NAIRA = 50_000_000;
 export const DAILY_MAX_TRIES = 5;
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 

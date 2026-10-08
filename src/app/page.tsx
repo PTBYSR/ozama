@@ -12,7 +12,7 @@ interface MintOption {
 }
 
 const OPTIONS: MintOption[] = [
-  { id: "500m", amount: 500_000_000, label: "500M", amountLabel: "500M", windowSeconds: 7200, windowLabel: "2 Hours Cooldown" },
+  { id: "50m", amount: 50_000_000, label: "50M", amountLabel: "50M", windowSeconds: 7200, windowLabel: "2 Hours Cooldown" },
   { id: "25m", amount: 25_000_000, label: "25M", amountLabel: "25M", windowSeconds: 3600, windowLabel: "1 Hour Cooldown" },
   { id: "10m", amount: 10_000_000, label: "10M", amountLabel: "10M", windowSeconds: 1800, windowLabel: "30 Min Cooldown" },
 ];
