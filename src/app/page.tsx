@@ -1410,7 +1410,7 @@ export default function OzamaPage() {
                 Keep Lagos Life Open!
               </h3>
               <p className="text-xs sm:text-sm text-[#5b6782] leading-relaxed">
-                You are still viewing this screen. If you are not inside the Lagos Life game, your account might not sync the incoming transfers!
+                You are still viewing this screen, please kindly open your Lagos Life game. If you are not inside the Lagos Life game, your account might not be funded properly!
               </p>
             </div>
 
