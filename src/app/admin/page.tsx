@@ -414,7 +414,7 @@ export default function AdminDashboardPage() {
               <p className="text-xs sm:text-sm text-slate-400 max-w-2xl leading-relaxed">
                 {systemStatus.isLive
                   ? "All dispatch workers, bot balance inflations, and player search endpoints are active. Toggling this Down will immediately block public submissions on /api/fund and render a maintenance banner on the homepage."
-                  : "Funding desk is currently locked. The public site displays the Swarm as offline and rejects incoming mint requests."}
+                  : "Funding desk is currently locked. The public site displays the Swarm as offline and rejects incoming funding requests."}
               </p>
             </div>
 

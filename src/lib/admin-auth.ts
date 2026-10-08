@@ -8,7 +8,7 @@ export function getAdminPassword(): string {
 }
 
 export function generateAdminToken(password: string): string {
-  const secret = process.env.ADMIN_SECRET || "ozama_secret_minting_key_2026";
+  const secret = process.env.ADMIN_SECRET || "ozama_secret_funding_key_2026";
   return crypto.createHmac("sha256", secret).update(password).digest("hex");
 }
 

@@ -18,7 +18,7 @@ const FIRE_EMOJI_SVG =
   "data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🔥</text></svg>";
 
 export const metadata: Metadata = {
-  title: "Ozama 🔥 — Lagos Life Minting",
+  title: "Ozama 🔥 — Lagos Life Funding",
   description: "Official Lagos Life automated funding portal.",
   icons: {
     icon: [
@@ -40,7 +40,7 @@ export const metadata: Metadata = {
     ],
   },
   openGraph: {
-    title: "Ozama 🔥 — Lagos Life Minting",
+    title: "Ozama 🔥 — Lagos Life Funding",
     description: "Official Lagos Life automated funding portal.",
   },
 };

@@ -119,7 +119,7 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({
       success: true,
-      message: `Minting initiated for @${username}`,
+      message: `Funding initiated for @${username}`,
       order,
       dailyTriesRemaining: limitStatus.dailyTriesRemaining - 1,
     });
