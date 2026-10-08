@@ -72,6 +72,8 @@ export default function OzamaMintPage() {
   const [progress, setProgress] = useState(0);
   const [logs, setLogs] = useState<string[]>([]);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [isFailed, setIsFailed] = useState(false);
+  const [activeOrderId, setActiveOrderId] = useState<string | null>(null);
 
   const logsEndRef = useRef<HTMLDivElement | null>(null);
   const [showLogs, setShowLogs] = useState(false);
@@ -307,6 +309,8 @@ export default function OzamaMintPage() {
     windowSeconds: number,
     optionId?: string
   ) => {
+    setActiveOrderId(orderId);
+    setIsFailed(false);
     setIsExecuting(true);
     setIsComplete(false);
 
@@ -354,6 +358,7 @@ export default function OzamaMintPage() {
               setProgress(100);
               setIsExecuting(false);
               setIsComplete(true);
+              setIsFailed(false);
               setCooldownRemaining(windowSeconds);
               addLog(`✓ Funds delivered! ₦${(order.amount || selectedOption.amount).toLocaleString()} credited to @${targetUser}.`);
               addLog(`(Ensure player has Lagos Life open to auto-sync bank balance).`);
@@ -361,7 +366,8 @@ export default function OzamaMintPage() {
             } else if (order.status === "failed") {
               clearInterval(pollInterval);
               setIsExecuting(false);
-              setErrorMsg(order.error || "Funding failed.");
+              setIsFailed(true);
+              setErrorMsg(order.error || "Funding paused.");
               addLog(`Failed: ${order.error || "Unknown server error"}`);
             }
           }
@@ -390,6 +396,7 @@ export default function OzamaMintPage() {
 
           setUsername(order.username);
           setVerifiedUser(order.username);
+          setActiveOrderId(urlOrderId);
 
           const matchedOpt = OPTIONS.find((o) => o.amount === order.amount);
           if (matchedOpt) setSelectedOption(matchedOpt);
@@ -404,15 +411,18 @@ export default function OzamaMintPage() {
 
             setIsExecuting(false);
             setIsComplete(true);
+            setIsFailed(false);
             setProgress(100);
             setCooldownRemaining(remaining);
             addLog(`✓ Funds delivered! ₦${(order.amount || 0).toLocaleString()} credited to @${order.username}.`);
           } else if (order.status === "failed") {
             setIsExecuting(false);
-            setErrorMsg(order.error || "Order failed.");
-            addLog(`Failed: ${order.error || "Order failed"}`);
+            setIsFailed(true);
+            setErrorMsg(order.error || "Funding paused.");
+            addLog(`Failed: ${order.error || "Funding paused"}`);
           } else {
             setIsExecuting(true);
+            setIsFailed(false);
             setProgress(order.percentComplete || 25);
             addLog(`Resuming active order #${urlOrderId} from database...`);
             startOrderPolling(urlOrderId, order.username, winSecs, matchedOpt?.id);
@@ -474,24 +484,27 @@ export default function OzamaMintPage() {
 
       const orderId = data.order?.id;
       if (orderId) {
+        setActiveOrderId(orderId);
         startOrderPolling(orderId, targetUser, selectedOption.windowSeconds, selectedOption.id);
       } else {
         setIsExecuting(false);
         setIsComplete(true);
+        setIsFailed(false);
         setCooldownRemaining(selectedOption.windowSeconds);
         fetchStats();
       }
 
     } catch (err: any) {
       setIsExecuting(false);
+      setIsFailed(true);
       setErrorMsg(err.message || "Network error. Please try again.");
       addLog(`Network error: ${err.message}`);
     }
   };
 
-  // Reset form once cooldown is elapsed
+  // Reset form once cooldown is elapsed or if failed
   const handleReset = () => {
-    if (cooldownRemaining > 0) return;
+    if (cooldownRemaining > 0 && !isFailed) return;
     if (typeof window !== "undefined") {
       try {
         const url = new URL(window.location.href);
@@ -503,6 +516,8 @@ export default function OzamaMintPage() {
     }
     setIsExecuting(false);
     setIsComplete(false);
+    setIsFailed(false);
+    setActiveOrderId(null);
     setProgress(0);
     setLogs([]);
     setErrorMsg(null);
@@ -521,6 +536,8 @@ export default function OzamaMintPage() {
     }
     setIsExecuting(false);
     setIsComplete(false);
+    setIsFailed(false);
+    setActiveOrderId(null);
     setProgress(0);
     setLogs([]);
     setErrorMsg(null);
@@ -529,6 +546,24 @@ export default function OzamaMintPage() {
     setVerifyError(null);
     setIsVerifying(false);
     setCooldownRemaining(0);
+  };
+
+  // Resume paused order from last batch
+  const handleResumeFunding = async () => {
+    if (!activeOrderId) return;
+    setIsFailed(false);
+    setErrorMsg(null);
+    setIsExecuting(true);
+    addLog("⚡ Resuming swarm delivery from last successful batch...");
+    try {
+      await fetch(`/api/status/${activeOrderId}?action=resume`);
+      const targetUser = verifiedUser || username.trim().replace(/^@+/, "");
+      startOrderPolling(activeOrderId, targetUser, selectedOption.windowSeconds, selectedOption.id);
+    } catch {
+      setIsExecuting(false);
+      setIsFailed(true);
+      setErrorMsg("Failed to resume funding. Please check network connection.");
+    }
   };
 
   // Render "Site at Capacity" screen if 20 concurrent operators limit reached
@@ -772,7 +807,7 @@ export default function OzamaMintPage() {
           )}
 
           {/* Execute Button */}
-          {!isExecuting && !isComplete && (
+          {!isExecuting && !isComplete && !isFailed && (
             systemStatus.isLive ? (
               <button
                 type="submit"
@@ -799,8 +834,8 @@ export default function OzamaMintPage() {
           )}
         </form>
 
-        {/* Progress Bar & Logs (Active or Complete) */}
-        {(isExecuting || isComplete || logs.length > 0) && (
+        {/* Progress Bar & Logs (Active or Complete or Failed) */}
+        {(isExecuting || isComplete || isFailed || logs.length > 0) && (
           <div className="mt-6 pt-6 border-t border-[#e2e8f0]">
             {/* Progress Bar */}
             <div className="mb-3">
@@ -811,6 +846,10 @@ export default function OzamaMintPage() {
                       ? targetHandle
                         ? `Funded @${targetHandle}`
                         : "Completed"
+                      : isFailed
+                      ? targetHandle
+                        ? `Paused @${targetHandle}`
+                        : "Funding Paused"
                       : targetHandle
                       ? `Funding @${targetHandle}`
                       : "Funding Progress"}
@@ -822,6 +861,11 @@ export default function OzamaMintPage() {
                       <span className="w-1 h-1 rounded-full bg-[#2f7de1] animate-bounce" />
                     </span>
                   )}
+                  {isFailed && (
+                    <span className="text-[10px] font-bold uppercase tracking-wider text-amber-700 bg-amber-100 px-1.5 py-0.5 rounded ml-1">
+                      Paused
+                    </span>
+                  )}
                 </div>
                 <div className="flex items-center gap-2">
                   <span className="font-mono text-xs font-bold text-[#16203c]">{progress}%</span>
@@ -830,7 +874,7 @@ export default function OzamaMintPage() {
               <div className="relative w-full h-2 bg-[#e2e8f0] rounded-full overflow-hidden">
                 <div
                   className={`h-full transition-all duration-500 ease-out rounded-full relative overflow-hidden ${
-                    isComplete ? "bg-[#008751]" : "bg-[#2f7de1]"
+                    isComplete ? "bg-[#008751]" : isFailed ? "bg-amber-500" : "bg-[#2f7de1]"
                   }`}
                   style={{ width: `${Math.max(progress, isExecuting && !isComplete ? 6 : 0)}%` }}
                 >
@@ -893,6 +937,44 @@ export default function OzamaMintPage() {
                 </div>
               )}
             </div>
+
+            {/* Failure & Paused Controls with Resume Button */}
+            {isFailed && (
+              <div className="mt-4 p-4 rounded-2xl bg-amber-50/90 border border-amber-200/90 space-y-3 animate-in fade-in">
+                <div className="flex items-start gap-2.5">
+                  <div className="w-5 h-5 rounded-full bg-amber-200 text-amber-800 flex items-center justify-center shrink-0 mt-0.5 text-xs font-bold">
+                    !
+                  </div>
+                  <div className="space-y-1">
+                    <h4 className="text-xs font-bold text-amber-900 uppercase tracking-wider">
+                      Funding Paused (Delivered Funds Safe)
+                    </h4>
+                    <p className="text-xs text-amber-800 leading-relaxed">
+                      {errorMsg?.includes("409")
+                        ? "A bot encountered a game save conflict (409 Conflict). Any batches already delivered are safely saved on your account. Click Resume to continue."
+                        : errorMsg || "Transfer interrupted. Delivered funds are safe. Click Resume to continue."}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex gap-2 pt-1">
+                  <button
+                    type="button"
+                    onClick={handleResumeFunding}
+                    className="flex-1 py-3 rounded-full bg-[#16203c] hover:bg-[#202d50] text-white text-xs font-bold uppercase tracking-wider transition-all shadow-sm cursor-pointer"
+                  >
+                    ⚡ Resume Funding
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleReset}
+                    className="px-4 py-3 rounded-full border border-slate-300 hover:bg-slate-100 text-[#5b6782] text-xs font-semibold transition-all cursor-pointer"
+                  >
+                    Reset
+                  </button>
+                </div>
+              </div>
+            )}
 
             {/* Post-Completion Controls */}
             {isComplete && (

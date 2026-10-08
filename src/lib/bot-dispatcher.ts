@@ -73,20 +73,20 @@ export async function advanceOrderStep(orderId: string) {
         throw new Error(`User @${order.username} could not be resolved on Lagos Life.`);
       }
 
-      // Task 2: Bot Swarm Failover — Try up to 3 bot profiles from getNextBot()
+      // Task 2: Bot Swarm Failover — Try up to 8 bot profiles from getNextBot()
       // Task 3: Strict Progress Accounting — Initialize sentAmt = 0, only update if success
       let sentAmt = 0;
       let sendSuccess = false;
       let lastError = "";
 
-      for (let attempt = 0; attempt < 3; attempt++) {
+      for (let attempt = 0; attempt < 8; attempt++) {
         const bot = getNextBot();
         if (!bot) {
           lastError = "No bots available in swarm registry pool";
           break;
         }
 
-        console.log(`[Swarm Dispatch] Batch #${nextBatchId}: Trying bot @${bot.username} (attempt ${attempt + 1}/3) for ₦${batchAmount.toLocaleString()}...`);
+        console.log(`[Swarm Dispatch] Batch #${nextBatchId}: Trying bot @${bot.username} (attempt ${attempt + 1}/8) for ₦${batchAmount.toLocaleString()}...`);
 
         try {
           const sendResult = await sendFromBot(bot, player.id, batchAmount);
@@ -97,12 +97,15 @@ export async function advanceOrderStep(orderId: string) {
             break;
           } else {
             lastError = sendResult.error || "Bot transfer failed";
-            console.warn(`[Swarm Dispatch] Bot @${bot.username} attempt ${attempt + 1}/3 failed: ${lastError}`);
+            console.warn(`[Swarm Dispatch] Bot @${bot.username} attempt ${attempt + 1}/8 failed: ${lastError}`);
           }
         } catch (botErr: any) {
           lastError = botErr?.message || "Bot exception";
           console.warn(`[Swarm Dispatch] Bot @${bot.username} error: ${lastError}`);
         }
+
+        // Brief delay between bot attempts to prevent burst contention
+        await new Promise((r) => setTimeout(r, 250));
       }
 
       // Strict Progress Accounting:
@@ -192,5 +195,17 @@ export async function processOrderBackground(orderId: string) {
   } finally {
     activeJobs.delete(orderId);
   }
+}
+
+export async function resumeOrder(orderId: string) {
+  const order = await dbAdapter.getOrder(orderId);
+  if (!order || order.status === "completed") {
+    return order;
+  }
+  await dbAdapter.updateOrder(orderId, {
+    status: "streaming",
+    error: undefined,
+  });
+  return await dbAdapter.getOrder(orderId);
 }
 

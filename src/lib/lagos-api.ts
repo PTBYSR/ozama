@@ -134,8 +134,8 @@ export async function sendFromBot(
       }
 
       const saveData = await saveRes.json();
-      const game = saveData.game || {};
-      const curMoney = Number(game.money) || 0;
+      let game = saveData.game || {};
+      let curMoney = Number(game.money) || 0;
       let baseTimestamp = saveData.updatedAt;
 
       // If bot already holds enough funds for amount + fee, inflation is not required
@@ -172,6 +172,10 @@ export async function sendFromBot(
             if (conflictData.updatedAt) {
               baseTimestamp = conflictData.updatedAt;
             }
+            if (conflictData.game) {
+              game = conflictData.game;
+              curMoney = Number(conflictData.game.money) || curMoney;
+            }
           } catch {
             lastError = "409 Conflict (stale save)";
           }
@@ -180,8 +184,8 @@ export async function sendFromBot(
           lastError = `PUT /api/save failed (${putRes.status}): ${errText.substring(0, 60)}`;
         }
 
-        // Brief delay before trying next delta or re-fetching
-        await new Promise((r) => setTimeout(r, 200));
+        // Brief delay before trying next delta or re-fetching to let server save propagate
+        await new Promise((r) => setTimeout(r, 350));
       }
 
       if (!inflationSucceeded) {

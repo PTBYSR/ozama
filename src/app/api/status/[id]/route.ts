@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getOrder } from "@/lib/orders";
-import { advanceOrderStep } from "@/lib/bot-dispatcher";
+import { advanceOrderStep, resumeOrder } from "@/lib/bot-dispatcher";
 
 export const maxDuration = 60;
 
@@ -14,10 +14,18 @@ export async function GET(
     return NextResponse.json({ error: "Missing order ID" }, { status: 400 });
   }
 
+  const { searchParams } = new URL(req.url);
+  const isResume = searchParams.get("action") === "resume";
+
   let order = await getOrder(id);
 
   if (!order) {
     return NextResponse.json({ error: "Order not found" }, { status: 404 });
+  }
+
+  if (isResume && order.status === "failed") {
+    const resumed = await resumeOrder(id);
+    if (resumed) order = resumed;
   }
 
   // Active orders advance step-by-step on every client poll (100% resilient on serverless & Vercel)
