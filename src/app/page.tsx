@@ -78,10 +78,14 @@ export default function OzamaMintPage() {
 
   const logsEndRef = useRef<HTMLDivElement | null>(null);
   const [showLogs, setShowLogs] = useState(false);
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   // Username validation regex: 3-24 alphanumeric or underscore
   const targetHandle = (verifiedUser || username).trim().replace(/^@+/, "");
   const isUsernameValid = /^[a-zA-Z0-9_]{3,24}$/.test(targetHandle);
+
+  // Active funding state flag (determines if progress view replaces setup form)
+  const isFundingActive = isExecuting || isComplete || isFailed;
 
   // Swarm Activity Status (Live vs Down)
   const [systemStatus, setSystemStatus] = useState<{ isLive: boolean; maintenanceMessage?: string }>({
@@ -343,7 +347,12 @@ export default function OzamaMintPage() {
     let lastLoggedStatus = "";
     let lastLoggedBatchCount = 0;
 
-    const pollInterval = setInterval(async () => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+
+    pollIntervalRef.current = setInterval(async () => {
       try {
         const statusRes = await fetch(`/api/status/${orderId}`);
         if (statusRes.ok) {
@@ -369,7 +378,10 @@ export default function OzamaMintPage() {
                 lastLoggedBatchCount = batches.length;
               }
             } else if (order.status === "completed") {
-              clearInterval(pollInterval);
+              if (pollIntervalRef.current) {
+                clearInterval(pollIntervalRef.current);
+                pollIntervalRef.current = null;
+              }
               setProgress(100);
               setIsExecuting(false);
               setIsComplete(true);
@@ -379,7 +391,10 @@ export default function OzamaMintPage() {
               addLog(`(Ensure player has Lagos Life open to auto-sync bank balance).`);
               fetchStats();
             } else if (order.status === "failed") {
-              clearInterval(pollInterval);
+              if (pollIntervalRef.current) {
+                clearInterval(pollIntervalRef.current);
+                pollIntervalRef.current = null;
+              }
               setIsExecuting(false);
               setIsFailed(true);
               setErrorMsg(order.error || "Funding paused.");
@@ -517,9 +532,24 @@ export default function OzamaMintPage() {
     }
   };
 
-  // Reset form once cooldown is elapsed or if failed
+  // Cancel active funding in progress
+  const handleCancelFunding = () => {
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
+    setIsExecuting(false);
+    setIsFailed(true);
+    setErrorMsg("Funding was stopped. Any funds already delivered to your account remain safe.");
+    addLog("Funding stopped by user. Delivered funds are safe.");
+  };
+
+  // Reset view to reopen username and funding option UI
   const handleReset = () => {
-    if (cooldownRemaining > 0 && !isFailed) return;
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
+    }
     if (typeof window !== "undefined") {
       try {
         const url = new URL(window.location.href);
@@ -690,151 +720,151 @@ export default function OzamaMintPage() {
           </div>
         )}
 
-        {/* Input Form */}
-        <form onSubmit={handleExecuteClick} className="space-y-5">
-          {/* Invisible Anti-Bot Honeypot Field */}
-          <input
-            type="text"
-            name="website"
-            value={honeypot}
-            onChange={(e) => setHoneypot(e.target.value)}
-            tabIndex={-1}
-            autoComplete="off"
-            className="hidden opacity-0 absolute -z-50 pointer-events-none"
-            aria-hidden="true"
-          />
+        {/* Mode 1: Setup Form (Username & Funding Options) */}
+        {!isFundingActive && (
+          <form onSubmit={handleExecuteClick} className="space-y-5 animate-in fade-in duration-300">
+            {/* Invisible Anti-Bot Honeypot Field */}
+            <input
+              type="text"
+              name="website"
+              value={honeypot}
+              onChange={(e) => setHoneypot(e.target.value)}
+              tabIndex={-1}
+              autoComplete="off"
+              className="hidden opacity-0 absolute -z-50 pointer-events-none"
+              aria-hidden="true"
+            />
 
-          {/* Username Input */}
-          <div>
-            <label className="block text-xs font-bold text-[#16203c] uppercase tracking-wider mb-1.5">
-              Username
-            </label>
-            <div className="relative">
-              <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-mono text-sm font-semibold text-[#5b6782]">
-                @
-              </span>
-              <input
-                type="text"
-                value={username}
-                disabled={isFieldsLocked}
-                onChange={(e) => {
-                  const val = e.target.value;
-                  setUsername(val);
-                  if (errorMsg) setErrorMsg(null);
-                  if (userLimitNotice) setUserLimitNotice(null);
-                }}
-                placeholder="lagoslife_username"
-                className={`w-full bg-[#f8fafd] border rounded-2xl pl-8 pr-10 py-3 text-sm font-semibold text-[#16203c] placeholder:text-[#94a3b8] focus:outline-none transition-all ${
-                  verifyError && username.trim().length >= 3
-                    ? "border-red-400 focus:border-red-500 bg-red-50/20"
-                    : verifiedUser && userLimitNotice
-                    ? "border-amber-400 focus:border-amber-500 bg-amber-50/20"
-                    : verifiedUser
-                    ? "border-[#008751] focus:border-[#008751] bg-[#f0fbf5]/40"
-                    : "border-[#d5dde6] focus:border-[#2f7de1]"
-                } ${isFieldsLocked ? "opacity-60 cursor-not-allowed bg-[#edf2f7]" : ""}`}
-              />
-              <div className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-none">
-                {isVerifying && (
-                  <svg
-                    className="animate-spin h-4 w-4 text-[#2f7de1]"
-                    xmlns="http://www.w3.org/2000/svg"
-                    fill="none"
-                    viewBox="0 0 24 24"
-                  >
-                    <circle
-                      className="opacity-25"
-                      cx="12"
-                      cy="12"
-                      r="10"
-                      stroke="currentColor"
-                      strokeWidth="4"
-                    />
-                    <path
-                      className="opacity-75"
-                      fill="currentColor"
-                      d="M4 12a8 8 0 018-8v8H4z"
-                    />
-                  </svg>
-                )}
-                {!isVerifying && verifiedUser && !userLimitNotice && (
-                  <span className="text-sm text-[#008751] font-bold">✓</span>
-                )}
-                {!isVerifying && verifiedUser && userLimitNotice && (
-                  <span className="text-sm text-amber-600 font-bold">⏳</span>
-                )}
-                {!isVerifying && verifyError && username.trim().length >= 3 && (
-                  <span className="text-sm text-red-500 font-bold">✕</span>
-                )}
+            {/* Username Input */}
+            <div>
+              <label className="block text-xs font-bold text-[#16203c] uppercase tracking-wider mb-1.5">
+                Username
+              </label>
+              <div className="relative">
+                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 font-mono text-sm font-semibold text-[#5b6782]">
+                  @
+                </span>
+                <input
+                  type="text"
+                  value={username}
+                  disabled={!systemStatus.isLive}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    setUsername(val);
+                    if (errorMsg) setErrorMsg(null);
+                    if (userLimitNotice) setUserLimitNotice(null);
+                  }}
+                  placeholder="lagoslife_username"
+                  className={`w-full bg-[#f8fafd] border rounded-2xl pl-8 pr-10 py-3 text-sm font-semibold text-[#16203c] placeholder:text-[#94a3b8] focus:outline-none transition-all ${
+                    verifyError && username.trim().length >= 3
+                      ? "border-red-400 focus:border-red-500 bg-red-50/20"
+                      : verifiedUser && userLimitNotice
+                      ? "border-amber-400 focus:border-amber-500 bg-amber-50/20"
+                      : verifiedUser
+                      ? "border-[#008751] focus:border-[#008751] bg-[#f0fbf5]/40"
+                      : "border-[#d5dde6] focus:border-[#2f7de1]"
+                  } ${!systemStatus.isLive ? "opacity-60 cursor-not-allowed bg-[#edf2f7]" : ""}`}
+                />
+                <div className="absolute right-3.5 top-1/2 -translate-y-1/2 flex items-center justify-center pointer-events-none">
+                  {isVerifying && (
+                    <svg
+                      className="animate-spin h-4 w-4 text-[#2f7de1]"
+                      xmlns="http://www.w3.org/2000/svg"
+                      fill="none"
+                      viewBox="0 0 24 24"
+                    >
+                      <circle
+                        className="opacity-25"
+                        cx="12"
+                        cy="12"
+                        r="10"
+                        stroke="currentColor"
+                        strokeWidth="4"
+                      />
+                      <path
+                        className="opacity-75"
+                        fill="currentColor"
+                        d="M4 12a8 8 0 018-8v8H4z"
+                      />
+                    </svg>
+                  )}
+                  {!isVerifying && verifiedUser && !userLimitNotice && (
+                    <span className="text-sm text-[#008751] font-bold">✓</span>
+                  )}
+                  {!isVerifying && verifiedUser && userLimitNotice && (
+                    <span className="text-sm text-amber-600 font-bold">⏳</span>
+                  )}
+                  {!isVerifying && verifyError && username.trim().length >= 3 && (
+                    <span className="text-sm text-red-500 font-bold">✕</span>
+                  )}
+                </div>
+              </div>
+
+              {/* Minimal Real-time Feedback */}
+              {isVerifying && (
+                <p className="mt-1.5 text-xs text-[#5b6782] flex items-center gap-1.5 animate-in fade-in duration-150">
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#2f7de1] animate-pulse" />
+                  Checking player on Lagos Life...
+                </p>
+              )}
+              {!isVerifying && verifiedUser && !userLimitNotice && (
+                <p className="mt-1.5 text-xs text-[#008751] font-medium flex items-center gap-1.5 animate-in fade-in duration-150">
+                  <span>✓</span> Player verified: <strong className="font-semibold">@{verifiedUser}</strong>
+                </p>
+              )}
+              {!isVerifying && verifiedUser && userLimitNotice && (
+                <p className="mt-1.5 text-xs text-amber-600 font-medium flex items-center gap-1.5 animate-in fade-in duration-150">
+                  <span>⏳</span> {userLimitNotice}
+                </p>
+              )}
+              {!isVerifying && verifyError && username.trim().length >= 3 && (
+                <p className="mt-1.5 text-xs text-red-500 font-medium flex items-center gap-1.5 animate-in fade-in duration-150">
+                  <span>✕</span> {verifyError}
+                </p>
+              )}
+            </div>
+
+            {/* Options Input */}
+            <div>
+              <label className="block text-xs font-bold text-[#16203c] uppercase tracking-wider mb-1.5">
+                Funding Option
+              </label>
+              <div className="space-y-2">
+                {OPTIONS.map((opt) => {
+                  const isSelected = selectedOption.id === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      disabled={!systemStatus.isLive}
+                      onClick={() => {
+                        setSelectedOption(opt);
+                      }}
+                      className={`w-full text-left px-4 py-3 rounded-2xl border transition-all flex items-center justify-between text-sm ${
+                        isSelected
+                          ? "bg-[#16203c] text-white border-[#16203c] shadow-sm font-semibold"
+                          : "bg-[#f8fafd] text-[#16203c] border-[#d5dde6] hover:border-[#b0c0d0]"
+                      } ${!systemStatus.isLive ? "opacity-60 cursor-not-allowed" : "cursor-pointer"}`}
+                    >
+                      <span className="font-semibold">{opt.label}</span>
+                      <span className={`text-xs ${isSelected ? "text-slate-300" : "text-[#5b6782]"}`}>
+                        {opt.windowLabel}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
             </div>
 
-            {/* Minimal Real-time Feedback */}
-            {isVerifying && (
-              <p className="mt-1.5 text-xs text-[#5b6782] flex items-center gap-1.5 animate-in fade-in duration-150">
-                <span className="inline-block w-1.5 h-1.5 rounded-full bg-[#2f7de1] animate-pulse" />
-                Checking player on Lagos Life...
-              </p>
+            {/* Error Message */}
+            {errorMsg && (
+              <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl p-3">
+                {errorMsg}
+              </div>
             )}
-            {!isVerifying && verifiedUser && !userLimitNotice && (
-              <p className="mt-1.5 text-xs text-[#008751] font-medium flex items-center gap-1.5 animate-in fade-in duration-150">
-                <span>✓</span> Player verified: <strong className="font-semibold">@{verifiedUser}</strong>
-              </p>
-            )}
-            {!isVerifying && verifiedUser && userLimitNotice && (
-              <p className="mt-1.5 text-xs text-amber-600 font-medium flex items-center gap-1.5 animate-in fade-in duration-150">
-                <span>⏳</span> {userLimitNotice}
-              </p>
-            )}
-            {!isVerifying && verifyError && username.trim().length >= 3 && (
-              <p className="mt-1.5 text-xs text-red-500 font-medium flex items-center gap-1.5 animate-in fade-in duration-150">
-                <span>✕</span> {verifyError}
-              </p>
-            )}
-          </div>
 
-          {/* Options Input */}
-          <div>
-            <label className="block text-xs font-bold text-[#16203c] uppercase tracking-wider mb-1.5">
-              Funding Option
-            </label>
-            <div className="space-y-2">
-              {OPTIONS.map((opt) => {
-                const isSelected = selectedOption.id === opt.id;
-                return (
-                  <button
-                    key={opt.id}
-                    type="button"
-                    disabled={isFieldsLocked}
-                    onClick={() => {
-                      setSelectedOption(opt);
-                    }}
-                    className={`w-full text-left px-4 py-3 rounded-2xl border transition-all flex items-center justify-between text-sm ${
-                      isSelected
-                        ? "bg-[#16203c] text-white border-[#16203c] shadow-sm font-semibold"
-                        : "bg-[#f8fafd] text-[#16203c] border-[#d5dde6] hover:border-[#b0c0d0]"
-                    } ${isFieldsLocked ? "opacity-60 cursor-not-allowed" : "cursor-pointer"}`}
-                  >
-                    <span className="font-semibold">{opt.label}</span>
-                    <span className={`text-xs ${isSelected ? "text-slate-300" : "text-[#5b6782]"}`}>
-                      {opt.windowLabel}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          {/* Error Message */}
-          {errorMsg && (
-            <div className="bg-red-50 border border-red-200 text-red-700 text-xs rounded-xl p-3">
-              {errorMsg}
-            </div>
-          )}
-
-          {/* Execute Button */}
-          {!isExecuting && !isComplete && !isFailed && (
-            systemStatus.isLive ? (
+            {/* Execute Button */}
+            {systemStatus.isLive ? (
               <button
                 type="submit"
                 disabled={!verifiedUser || isVerifying}
@@ -856,18 +886,39 @@ export default function OzamaMintPage() {
                   {systemStatus.maintenanceMessage || "Funding is temporarily paused. Please check back shortly."}
                 </p>
               </div>
-            )
-          )}
-        </form>
+            )}
+          </form>
+        )}
 
-        {/* Progress Bar & Logs (Active or Complete or Failed) */}
-        {(isExecuting || isComplete || isFailed || logs.length > 0) && (
-          <div className="mt-6 pt-6 border-t border-[#e2e8f0]">
-            {/* Progress Bar */}
-            <div className="mb-3">
-              <div className="flex justify-between items-center text-xs font-semibold text-[#16203c] mb-1.5">
+        {/* Mode 2: Funding Progress View (Animated replacement of form) */}
+        {isFundingActive && (
+          <div className="space-y-5 animate-in fade-in zoom-in-95 duration-300">
+            {/* Top Recipient & Selected Tier Badge */}
+            <div className="p-4 rounded-2xl bg-[#f8fafd] border border-[#d5dde6] flex items-center justify-between">
+              <div>
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[#5b6782] mb-0.5">
+                  Recipient Player
+                </div>
+                <div className="font-mono text-sm font-bold text-[#16203c] flex items-center gap-1.5">
+                  <span>@{targetHandle || "player"}</span>
+                  <span className="text-xs text-[#008751]">✓</span>
+                </div>
+              </div>
+              <div className="text-right">
+                <div className="text-[10px] font-bold uppercase tracking-wider text-[#5b6782] mb-0.5">
+                  Amount
+                </div>
+                <div className="font-bold text-sm text-[#16203c]">
+                  {selectedOption.amountLabel}
+                </div>
+              </div>
+            </div>
+
+            {/* Progress Bar & Header */}
+            <div className="p-4 rounded-2xl bg-[#f8fafd] border border-[#d5dde6]">
+              <div className="flex justify-between items-center text-xs font-semibold text-[#16203c] mb-2">
                 <div className="flex items-center gap-1.5">
-                  <span className="truncate max-w-[240px]">
+                  <span className="truncate max-w-[220px]">
                     {isComplete
                       ? targetHandle
                         ? `Funded @${targetHandle}`
@@ -897,7 +948,7 @@ export default function OzamaMintPage() {
                   <span className="font-mono text-xs font-bold text-[#16203c]">{progress}%</span>
                 </div>
               </div>
-              <div className="relative w-full h-2 bg-[#e2e8f0] rounded-full overflow-hidden">
+              <div className="relative w-full h-2.5 bg-[#e2e8f0] rounded-full overflow-hidden">
                 <div
                   className={`h-full transition-all duration-500 ease-out rounded-full relative overflow-hidden ${
                     isComplete ? "bg-[#008751]" : isFailed ? "bg-amber-500" : "bg-[#2f7de1]"
@@ -911,12 +962,12 @@ export default function OzamaMintPage() {
               </div>
             </div>
 
-            {/* Collapsible Subtle Logs */}
-            <div className="mt-2.5">
+            {/* Collapsible Subtle Activity Logs */}
+            <div>
               <button
                 type="button"
                 onClick={() => setShowLogs(!showLogs)}
-                className="w-full flex items-center justify-between py-1.5 px-2 rounded-lg bg-slate-50/80 hover:bg-slate-100/80 border border-slate-200/60 transition-colors select-none text-left"
+                className="w-full flex items-center justify-between py-2 px-3 rounded-xl bg-slate-50/80 hover:bg-slate-100/80 border border-slate-200/60 transition-colors select-none text-left"
               >
                 <div className="flex items-center gap-2">
                   <span className="text-[10px] font-bold tracking-wider uppercase text-slate-500">Activity Logs</span>
@@ -947,7 +998,7 @@ export default function OzamaMintPage() {
               </button>
 
               {showLogs && (
-                <div className="mt-1.5 bg-[#0b1329] border border-slate-800/80 text-slate-300 font-mono text-[11px] rounded-xl p-3 max-h-32 overflow-y-auto space-y-1 shadow-inner">
+                <div className="mt-1.5 bg-[#0b1329] border border-slate-800/80 text-slate-300 font-mono text-[11px] rounded-xl p-3 max-h-36 overflow-y-auto space-y-1 shadow-inner">
                   {logs.map((log, index) => (
                     <div key={index} className="leading-relaxed text-slate-300">
                       {log}
@@ -964,9 +1015,36 @@ export default function OzamaMintPage() {
               )}
             </div>
 
-            {/* Failure & Paused Controls with Resume Button */}
+            {/* In-Flight Controls: CANCEL BUTTON & RESET BUTTON */}
+            {isExecuting && !isComplete && (
+              <div className="space-y-2 pt-1">
+                <div className="flex gap-2.5">
+                  <button
+                    type="button"
+                    onClick={handleCancelFunding}
+                    className="flex-1 py-3 px-4 rounded-full bg-rose-50 hover:bg-rose-100 text-rose-700 border border-rose-200 text-xs font-bold uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-2xs hover:scale-[1.01] active:scale-[0.99]"
+                  >
+                    <span>✕</span>
+                    <span>Cancel</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={handleReset}
+                    className="flex-1 py-3 px-4 rounded-full bg-[#16203c] hover:bg-[#202d50] text-white text-xs font-bold uppercase tracking-wider transition-all cursor-pointer flex items-center justify-center gap-1.5 shadow-xs hover:scale-[1.01] active:scale-[0.99]"
+                  >
+                    <span>↺</span>
+                    <span>Reset</span>
+                  </button>
+                </div>
+                <p className="text-[11px] text-center text-[#5b6782]">
+                  Tap <strong>Cancel</strong> to halt transfer, or <strong>Reset</strong> to reopen the form.
+                </p>
+              </div>
+            )}
+
+            {/* Failure & Paused Controls with Resume & Reset Button */}
             {isFailed && (
-              <div className="mt-4 p-4 rounded-2xl bg-amber-50/90 border border-amber-200/90 space-y-3 animate-in fade-in">
+              <div className="p-4 rounded-2xl bg-amber-50/90 border border-amber-200/90 space-y-3 animate-in fade-in">
                 <div className="flex items-start gap-2.5">
                   <div className="w-5 h-5 rounded-full bg-amber-200 text-amber-800 flex items-center justify-center shrink-0 mt-0.5 text-xs font-bold">
                     !
@@ -978,7 +1056,7 @@ export default function OzamaMintPage() {
                     <p className="text-xs text-amber-800 leading-relaxed">
                       {errorMsg?.includes("409")
                         ? "Transfer paused because of Lagos Life network delay. Don't worry, all money already sent to your account is safe! Tap Resume below to continue."
-                        : errorMsg || "Transfer paused. Delivered funds are safe. Tap Resume below to continue."}
+                        : errorMsg || "Transfer paused. Delivered funds are safe. Tap Resume to continue."}
                     </p>
                   </div>
                 </div>
@@ -994,9 +1072,9 @@ export default function OzamaMintPage() {
                   <button
                     type="button"
                     onClick={handleReset}
-                    className="px-4 py-3 rounded-full border border-slate-300 hover:bg-slate-100 text-[#5b6782] text-xs font-semibold transition-all cursor-pointer"
+                    className="flex-1 py-3 rounded-full border border-slate-300 hover:bg-slate-100 text-[#5b6782] text-xs font-semibold uppercase tracking-wider transition-all cursor-pointer text-center"
                   >
-                    Reset
+                    ↺ Reset
                   </button>
                 </div>
               </div>
@@ -1004,28 +1082,31 @@ export default function OzamaMintPage() {
 
             {/* Post-Completion Controls */}
             {isComplete && (
-              <div className="mt-4 space-y-2">
+              <div className="space-y-2.5 pt-1">
                 {cooldownRemaining > 0 ? (
-                  /* Cooldown Active: Button is strictly DISABLED */
-                  <button
-                    type="button"
-                    disabled={true}
-                    className="w-full py-3.5 rounded-full bg-slate-100 text-[#5b6782] border border-[#d5dde6] text-xs uppercase tracking-wider font-bold cursor-not-allowed flex items-center justify-center gap-2 select-none"
-                  >
-                    <span>⏳ Cooldown Active ({formatCooldown(cooldownRemaining)})</span>
-                  </button>
+                  <div className="space-y-2">
+                    <div className="w-full py-3 px-4 rounded-2xl bg-amber-50 text-amber-900 border border-amber-200 text-xs font-bold text-center flex items-center justify-center gap-2">
+                      <span>⏳</span>
+                      <span>Cooldown Active: {formatCooldown(cooldownRemaining)}</span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleReset}
+                      className="w-full py-3.5 rounded-full bg-[#16203c] hover:bg-[#202d50] text-white text-xs uppercase tracking-wider font-bold cursor-pointer transition-all shadow-xs"
+                    >
+                      ↺ Reset Form
+                    </button>
+                  </div>
                 ) : (
-                  /* Cooldown Ended: Button becomes active */
                   <button
                     type="button"
                     onClick={handleReset}
                     className="w-full py-3.5 lagos-green-button text-xs uppercase tracking-wider font-bold cursor-pointer"
                   >
-                    Start New Funding
+                    ↺ Start New Funding
                   </button>
                 )}
 
-                {/* Option to switch to a different account */}
                 <button
                   type="button"
                   onClick={handleSwitchUser}
