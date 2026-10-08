@@ -14,20 +14,30 @@ const ALLOWED_OPTIONS: Record<number, { windowSeconds: number; label: string }> 
 
 export async function POST(req: NextRequest) {
   try {
-    // 0. System Activity Check: reject if toggled Down in Admin
+    // 0. Extract Client IP
+    const rawIp = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || "127.0.0.1";
+    const ip = rawIp.split(",")[0].trim();
+
+    // 1. IP Ban Enforcement: Immediate rejection if IP is blocked
+    if (await dbAdapter.isIpBlocked(ip)) {
+      return NextResponse.json(
+        { error: "Access denied. Your IP address has been restricted by administrators." },
+        { status: 403 }
+      );
+    }
+
+    // 2. Global Kill Switch & System Activity Check
     const settings = await dbAdapter.getSystemSettings();
-    if (!settings.isLive) {
+    if (settings.killSwitch || !settings.isLive) {
       return NextResponse.json(
         {
-          error: settings.maintenanceMessage || "The Ozama Swarm is currently offline for maintenance. Funding is temporarily paused.",
+          error: settings.killSwitchMessage || settings.maintenanceMessage || "Ozama is currently offline for system maintenance.",
         },
         { status: 503 }
       );
     }
 
-    const ip = req.headers.get("x-forwarded-for") || "127.0.0.1";
-
-    // 1. Anti-Bot IP rate check (max 8 fundings attempted per min per IP)
+    // 3. Anti-Bot IP rate check (max 8 fundings attempted per min per IP)
     const ipCheck = antiBot.checkIpRate(ip, 8);
     if (!ipCheck.allowed) {
       return NextResponse.json(
@@ -115,7 +125,7 @@ export async function POST(req: NextRequest) {
     }
 
     // 5. Create and dispatch order
-    const order = await createOrder(username, amount);
+    const order = await createOrder(username, amount, ip);
 
     return NextResponse.json({
       success: true,

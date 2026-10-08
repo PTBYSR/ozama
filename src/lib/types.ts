@@ -19,6 +19,7 @@ export interface OrderDoc {
   updatedAt: string;
   completedAt?: string;
   error?: string;
+  clientIp?: string;
 }
 
 export interface FundingLogDoc {
@@ -42,6 +43,8 @@ export interface CooldownCheckResult {
 export interface SystemSettings {
   isLive: boolean;
   maintenanceMessage?: string;
+  killSwitch?: boolean;
+  killSwitchMessage?: string;
   updatedAt: string;
 }
 
@@ -53,5 +56,12 @@ export interface UserSummary {
   failedOrders: number;
   lastActive: string;
   lastStatus: string;
+  lastIp?: string;
+}
+
+export interface BlockedIpDoc {
+  ip: string;
+  reason?: string;
+  blockedAt: string;
 }
 

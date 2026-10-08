@@ -8,6 +8,8 @@ export async function GET(req: NextRequest) {
       {
         isLive: settings.isLive,
         maintenanceMessage: settings.maintenanceMessage || "",
+        killSwitch: settings.killSwitch ?? false,
+        killSwitchMessage: settings.killSwitchMessage || "Ozama is currently offline for system maintenance. Please check back shortly.",
         updatedAt: settings.updatedAt,
       },
       {
@@ -19,7 +21,13 @@ export async function GET(req: NextRequest) {
   } catch (error: any) {
     console.error("System status API error:", error);
     return NextResponse.json(
-      { isLive: true, maintenanceMessage: "", updatedAt: new Date().toISOString() },
+      {
+        isLive: true,
+        maintenanceMessage: "",
+        killSwitch: false,
+        killSwitchMessage: "Ozama is currently offline for system maintenance. Please check back shortly.",
+        updatedAt: new Date().toISOString(),
+      },
       { status: 200 }
     );
   }

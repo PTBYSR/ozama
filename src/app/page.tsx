@@ -88,10 +88,17 @@ export default function OzamaPage() {
   // Active funding or cooldown state (removes setup form and displays only the funding progress section)
   const isFundingActive = isExecuting || isFailed || cooldownRemaining > 0;
 
-  // Swarm Activity Status (Live vs Down)
-  const [systemStatus, setSystemStatus] = useState<{ isLive: boolean; maintenanceMessage?: string }>({
+  // Swarm Activity Status (Live vs Down, plus Global Kill Switch)
+  const [systemStatus, setSystemStatus] = useState<{
+    isLive: boolean;
+    maintenanceMessage?: string;
+    killSwitch?: boolean;
+    killSwitchMessage?: string;
+  }>({
     isLive: true,
     maintenanceMessage: "",
+    killSwitch: false,
+    killSwitchMessage: "",
   });
 
   // Fetch corner statistics
@@ -110,7 +117,7 @@ export default function OzamaPage() {
     }
   };
 
-  // Fetch live system status (Live vs Down)
+  // Fetch live system status (Live vs Down & Kill Switch)
   const fetchSystemStatus = async () => {
     try {
       const res = await fetch("/api/system-status");
@@ -119,6 +126,8 @@ export default function OzamaPage() {
         setSystemStatus({
           isLive: data.isLive ?? true,
           maintenanceMessage: data.maintenanceMessage || "",
+          killSwitch: data.killSwitch ?? false,
+          killSwitchMessage: data.killSwitchMessage || "",
         });
       }
     } catch {
@@ -761,7 +770,27 @@ export default function OzamaPage() {
           </div>
         </div>
 
-        {/* Maintenance Alert when Swarm is Down */}
+        {/* GLOBAL KILL SWITCH ACTIVE: Display ONLY the admin-editable message */}
+        {systemStatus.killSwitch ? (
+          <div className="py-6 px-2 text-center space-y-4 animate-in fade-in duration-300">
+            <div className="w-14 h-14 mx-auto rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-600 flex items-center justify-center text-2xl shadow-inner">
+              ⚡
+            </div>
+            <div className="space-y-2">
+              <h2 className="font-display text-lg font-bold text-[#16203c] tracking-tight">
+                System Announcement
+              </h2>
+              <div className="p-4 rounded-2xl bg-[#f8fafd] border border-[#d5dde6] text-xs sm:text-sm text-[#16203c] leading-relaxed font-medium">
+                {systemStatus.killSwitchMessage || "Ozama is currently offline for scheduled maintenance. Please check back shortly."}
+              </div>
+            </div>
+            <p className="text-[11px] text-[#5b6782]">
+              Updates will appear here automatically once service resumes.
+            </p>
+          </div>
+        ) : (
+          <>
+            {/* Maintenance Alert when Swarm is Down */}
         {!systemStatus.isLive && (
           <div className="mb-5 p-3.5 rounded-2xl bg-rose-50 border border-rose-200 text-rose-800 text-xs font-medium leading-relaxed text-center animate-in fade-in shadow-xs">
             <div className="font-bold text-rose-900 flex items-center justify-center gap-1.5 mb-1">
@@ -1172,6 +1201,8 @@ export default function OzamaPage() {
               </div>
             )}
           </div>
+        )}
+          </>
         )}
       </div>
 

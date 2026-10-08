@@ -2,9 +2,19 @@ import { NextRequest, NextResponse } from "next/server";
 import { resolvePlayer } from "@/lib/lagos-api";
 import { antiBot } from "@/lib/anti-bot";
 import { checkRateLimit } from "@/lib/rate-limiter";
+import { dbAdapter } from "@/lib/mongodb";
 
 export async function GET(req: NextRequest) {
-  const ip = req.headers.get("x-forwarded-for") || "127.0.0.1";
+  const rawIp = req.headers.get("x-forwarded-for") || req.headers.get("x-real-ip") || "127.0.0.1";
+  const ip = rawIp.split(",")[0].trim();
+
+  if (await dbAdapter.isIpBlocked(ip)) {
+    return NextResponse.json(
+      { exists: false, error: "Access restricted by administrator." },
+      { status: 403 }
+    );
+  }
+
   const ipCheck = antiBot.checkIpRate(ip, 30);
   if (!ipCheck.allowed) {
     return NextResponse.json(

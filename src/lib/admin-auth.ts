@@ -1,7 +1,7 @@
 import { NextRequest } from "next/server";
 import crypto from "crypto";
 
-const DEFAULT_ADMIN_PASS = "ozama2026";
+const DEFAULT_ADMIN_PASS = "Godisgood123";
 
 export function getAdminPassword(): string {
   return process.env.ADMIN_PASSWORD || DEFAULT_ADMIN_PASS;

@@ -11,10 +11,14 @@ export async function POST(req: NextRequest) {
     const body = await req.json();
     const isLive = typeof body.isLive === "boolean" ? body.isLive : true;
     const maintenanceMessage = typeof body.maintenanceMessage === "string" ? body.maintenanceMessage : "";
+    const killSwitch = typeof body.killSwitch === "boolean" ? body.killSwitch : false;
+    const killSwitchMessage = typeof body.killSwitchMessage === "string" ? body.killSwitchMessage : "";
 
     const updated = await dbAdapter.updateSystemSettings({
       isLive,
       maintenanceMessage,
+      killSwitch,
+      killSwitchMessage,
     });
 
     return NextResponse.json({

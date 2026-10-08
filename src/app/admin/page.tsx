@@ -2,7 +2,7 @@
 
 import React, { useState, useEffect } from "react";
 import Link from "next/link";
-import { SystemSettings, UserSummary, OrderDoc } from "@/lib/types";
+import { SystemSettings, UserSummary, OrderDoc, BlockedIpDoc } from "@/lib/types";
 
 interface AdminStats {
   totalAmount: number;
@@ -12,6 +12,7 @@ interface AdminStats {
   failedOrders: number;
   activeOrders: number;
   botPoolSize: number;
+  blockedIpsCount?: number;
 }
 
 function formatCompactNaira(amount: number): string {
@@ -35,11 +36,19 @@ function formatDate(iso: string): string {
       day: "numeric",
       hour: "2-digit",
       minute: "2-digit",
-      second: "2-digit",
     });
   } catch {
     return iso;
   }
+}
+
+// Determines if an in-progress order is stale (> 2 minutes without update)
+function isOrderStale(order: OrderDoc): boolean {
+  if (["streaming", "allocating", "authenticating", "queued"].includes(order.status)) {
+    const lastTouch = new Date(order.updatedAt || order.createdAt).getTime();
+    return Date.now() - lastTouch > 2 * 60 * 1000;
+  }
+  return false;
 }
 
 export default function AdminDashboardPage() {
@@ -53,6 +62,8 @@ export default function AdminDashboardPage() {
   const [systemStatus, setSystemStatus] = useState<SystemSettings>({
     isLive: true,
     maintenanceMessage: "",
+    killSwitch: false,
+    killSwitchMessage: "Ozama is currently offline for system maintenance. Please check back shortly.",
     updatedAt: "",
   });
   const [stats, setStats] = useState<AdminStats>({
@@ -63,19 +74,29 @@ export default function AdminDashboardPage() {
     failedOrders: 0,
     activeOrders: 0,
     botPoolSize: 2699,
+    blockedIpsCount: 0,
   });
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [orders, setOrders] = useState<OrderDoc[]>([]);
+  const [blockedIps, setBlockedIps] = useState<BlockedIpDoc[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Status toggle form state
+  // Status & Kill switch controls
   const [tempIsLive, setTempIsLive] = useState(true);
   const [tempMaintenanceMsg, setTempMaintenanceMsg] = useState("");
+  const [tempKillSwitch, setTempKillSwitch] = useState(false);
+  const [tempKillSwitchMsg, setTempKillSwitchMsg] = useState("");
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
-  const [statusSaveSuccess, setStatusSaveSuccess] = useState(false);
+  const [statusSaveSuccess, setStatusSaveSuccess] = useState<string | null>(null);
+
+  // Manual IP block input
+  const [manualIp, setManualIp] = useState("");
+  const [manualReason, setManualReason] = useState("");
+  const [isBlockingIp, setIsBlockingIp] = useState(false);
+  const [ipActionFeedback, setIpActionFeedback] = useState<string | null>(null);
 
   // Tab & Filters
-  const [activeTab, setActiveTab] = useState<"users" | "orders">("users");
+  const [activeTab, setActiveTab] = useState<"users" | "orders" | "security">("users");
   const [searchQuery, setSearchQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState<string>("all");
 
@@ -116,7 +137,7 @@ export default function AdminDashboardPage() {
         setIsAuthenticated(true);
         fetchOverview();
       } else {
-        setAuthError(data.error || "Incorrect admin key");
+        setAuthError(data.error || "Incorrect admin password");
       }
     } catch (err: any) {
       setAuthError(err.message || "Failed to authenticate");
@@ -135,10 +156,16 @@ export default function AdminDashboardPage() {
           setSystemStatus(data.systemStatus);
           setTempIsLive(data.systemStatus.isLive);
           setTempMaintenanceMsg(data.systemStatus.maintenanceMessage || "");
+          setTempKillSwitch(data.systemStatus.killSwitch || false);
+          setTempKillSwitchMsg(
+            data.systemStatus.killSwitchMessage ||
+              "Ozama is currently offline for system maintenance. Please check back shortly."
+          );
         }
         if (data.stats) setStats(data.stats);
         if (data.users) setUsers(data.users);
         if (data.orders) setOrders(data.orders);
+        if (data.blockedIps) setBlockedIps(data.blockedIps);
       } else if (res.status === 401) {
         setIsAuthenticated(false);
       }
@@ -149,40 +176,104 @@ export default function AdminDashboardPage() {
     }
   };
 
-  // Save Live/Down status
-  const handleSaveStatus = async (newIsLive?: boolean) => {
-    const targetLive = typeof newIsLive === "boolean" ? newIsLive : tempIsLive;
+  // Save Settings (Live/Down, Kill Switch, Messages)
+  const handleSaveSettings = async (overrides?: {
+    isLive?: boolean;
+    killSwitch?: boolean;
+    maintenanceMessage?: string;
+    killSwitchMessage?: string;
+  }) => {
     setIsUpdatingStatus(true);
-    setStatusSaveSuccess(false);
+    setStatusSaveSuccess(null);
+
+    const payload = {
+      isLive: overrides?.isLive !== undefined ? overrides.isLive : tempIsLive,
+      maintenanceMessage:
+        overrides?.maintenanceMessage !== undefined ? overrides.maintenanceMessage : tempMaintenanceMsg,
+      killSwitch: overrides?.killSwitch !== undefined ? overrides.killSwitch : tempKillSwitch,
+      killSwitchMessage:
+        overrides?.killSwitchMessage !== undefined ? overrides.killSwitchMessage : tempKillSwitchMsg,
+    };
 
     try {
       const res = await fetch("/api/admin/system-status", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          isLive: targetLive,
-          maintenanceMessage: tempMaintenanceMsg,
-        }),
+        body: JSON.stringify(payload),
       });
 
       if (res.ok) {
         const data = await res.json();
         setSystemStatus(data.settings);
         setTempIsLive(data.settings.isLive);
-        setStatusSaveSuccess(true);
-        setTimeout(() => setStatusSaveSuccess(false), 3000);
+        setTempKillSwitch(data.settings.killSwitch || false);
+        setStatusSaveSuccess("✓ Configuration saved and published live!");
+        setTimeout(() => setStatusSaveSuccess(null), 4000);
       }
     } catch (err) {
-      console.error("Status update error:", err);
+      console.error("Settings update error:", err);
     } finally {
       setIsUpdatingStatus(false);
     }
   };
 
-  // Quick toggle helper
-  const handleQuickToggle = (nextLive: boolean) => {
-    setTempIsLive(nextLive);
-    handleSaveStatus(nextLive);
+  // Quick toggle helper for Kill Switch
+  const handleToggleKillSwitch = (active: boolean) => {
+    setTempKillSwitch(active);
+    handleSaveSettings({ killSwitch: active });
+  };
+
+  // Quick toggle helper for Swarm Live / Down
+  const handleToggleSwarmLive = (live: boolean) => {
+    setTempIsLive(live);
+    handleSaveSettings({ isLive: live });
+  };
+
+  // Block an IP address immediately
+  const handleBlockIp = async (ipToBlock: string, reason = "Blocked by administrator") => {
+    const cleanIp = ipToBlock.trim();
+    if (!cleanIp) return;
+    setIsBlockingIp(true);
+    setIpActionFeedback(null);
+
+    try {
+      const res = await fetch("/api/admin/blocked-ips", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ip: cleanIp, reason }),
+      });
+      const data = await res.json();
+      if (res.ok) {
+        setIpActionFeedback(`✓ IP ${cleanIp} has been restricted immediately.`);
+        setManualIp("");
+        setManualReason("");
+        fetchOverview();
+        setTimeout(() => setIpActionFeedback(null), 4000);
+      } else {
+        setIpActionFeedback(`⚠️ Error: ${data.error || "Failed to block IP"}`);
+      }
+    } catch (err: any) {
+      setIpActionFeedback(`⚠️ Network error: ${err.message}`);
+    } finally {
+      setIsBlockingIp(false);
+    }
+  };
+
+  // Unblock an IP address immediately
+  const handleUnblockIp = async (ipToUnblock: string) => {
+    if (!ipToUnblock) return;
+    try {
+      const res = await fetch(`/api/admin/blocked-ips?ip=${encodeURIComponent(ipToUnblock)}`, {
+        method: "DELETE",
+      });
+      if (res.ok) {
+        setIpActionFeedback(`✓ IP ${ipToUnblock} is unblocked.`);
+        fetchOverview();
+        setTimeout(() => setIpActionFeedback(null), 3000);
+      }
+    } catch (err) {
+      console.error("Failed to unblock IP:", err);
+    }
   };
 
   // Auto-refresh every 12s if authenticated
@@ -209,10 +300,10 @@ export default function AdminDashboardPage() {
   // -------------------------------------------------------------
   if (authChecking) {
     return (
-      <div className="min-h-screen bg-[#070b14] flex items-center justify-center text-slate-400">
+      <div className="min-h-screen bg-[#070b14] flex items-center justify-center p-4 text-slate-400">
         <div className="flex items-center gap-3">
           <div className="w-5 h-5 border-2 border-emerald-500 border-t-transparent rounded-full animate-spin" />
-          <span className="text-sm font-mono tracking-wider">VERIFYING COMMAND SESSION...</span>
+          <span className="text-xs sm:text-sm font-mono tracking-wider">VERIFYING COMMAND SESSION...</span>
         </div>
       </div>
     );
@@ -221,16 +312,15 @@ export default function AdminDashboardPage() {
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-[#070b14] text-slate-100 flex flex-col items-center justify-center p-4 selection:bg-emerald-500 selection:text-black">
-        <div className="w-full max-w-md bg-[#0e1626]/90 border border-slate-800/80 rounded-3xl p-8 backdrop-blur-xl shadow-2xl relative overflow-hidden">
-          {/* Glowing background decor */}
+        <div className="w-full max-w-sm sm:max-w-md bg-[#0e1626]/90 border border-slate-800/80 rounded-3xl p-6 sm:p-8 backdrop-blur-xl shadow-2xl relative overflow-hidden">
           <div className="absolute -top-24 -right-24 w-48 h-48 bg-emerald-500/10 rounded-full blur-3xl pointer-events-none" />
           <div className="absolute -bottom-24 -left-24 w-48 h-48 bg-amber-500/10 rounded-full blur-3xl pointer-events-none" />
 
           <div className="text-center mb-6">
-            <div className="inline-flex items-center justify-center w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border border-emerald-500/30 text-2xl mb-3 shadow-inner">
+            <div className="inline-flex items-center justify-center w-12 h-12 sm:w-14 sm:h-14 rounded-2xl bg-gradient-to-br from-emerald-500/20 to-teal-500/10 border border-emerald-500/30 text-2xl mb-3 shadow-inner">
               🔥
             </div>
-            <h1 className="text-2xl font-bold font-display tracking-tight text-white flex items-center justify-center gap-2">
+            <h1 className="text-xl sm:text-2xl font-bold font-display tracking-tight text-white flex items-center justify-center gap-2">
               Ozama <span>Swarm Command</span>
             </h1>
             <p className="text-xs text-slate-400 mt-1">Authorized personnel only. Enter root access password.</p>
@@ -239,7 +329,7 @@ export default function AdminDashboardPage() {
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label className="block text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-                Admin Master Key
+                Admin Master Password
               </label>
               <input
                 type="password"
@@ -261,7 +351,7 @@ export default function AdminDashboardPage() {
             <button
               type="submit"
               disabled={isSubmittingAuth || !passwordInput.trim()}
-              className="w-full bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold py-3 px-4 rounded-xl text-sm transition-all shadow-lg shadow-emerald-500/20 active:scale-[0.99] flex items-center justify-center gap-2 cursor-pointer"
+              className="w-full min-h-[46px] bg-emerald-500 hover:bg-emerald-400 disabled:opacity-50 text-slate-950 font-bold py-3 px-4 rounded-xl text-sm transition-all shadow-lg shadow-emerald-500/20 active:scale-[0.99] flex items-center justify-center gap-2 cursor-pointer"
             >
               {isSubmittingAuth ? (
                 <>
@@ -291,33 +381,39 @@ export default function AdminDashboardPage() {
   }
 
   // -------------------------------------------------------------
-  // Authenticated Admin Dashboard
+  // Authenticated Admin Dashboard (Highly Mobile Responsive)
   // -------------------------------------------------------------
   return (
-    <div className="min-h-screen bg-[#070b14] text-slate-100 selection:bg-emerald-500 selection:text-black">
+    <div className="min-h-screen bg-[#070b14] text-slate-100 selection:bg-emerald-500 selection:text-black pb-12">
       {/* Top Navbar */}
-      <header className="border-b border-slate-800/80 bg-[#0a101d]/80 backdrop-blur-md sticky top-0 z-50">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <div className="flex items-center justify-center w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-500/30 text-lg">
+      <header className="border-b border-slate-800/80 bg-[#0a101d]/90 backdrop-blur-md sticky top-0 z-50">
+        <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-2">
+          {/* Brand */}
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="flex items-center justify-center w-8 h-8 sm:w-9 sm:h-9 rounded-xl bg-emerald-500/20 border border-emerald-500/30 text-base sm:text-lg shrink-0">
               🔥
             </div>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="font-display font-bold text-base text-white tracking-tight">Ozama</span>
-                <span className="px-2 py-0.5 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[10px] font-mono font-bold tracking-wider uppercase">
-                  Admin Console
+            <div className="min-w-0">
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="font-display font-bold text-sm sm:text-base text-white tracking-tight truncate">
+                  Ozama
+                </span>
+                <span className="px-1.5 py-0.2 rounded-full bg-emerald-500/20 text-emerald-400 border border-emerald-500/30 text-[9px] sm:text-[10px] font-mono font-bold tracking-wider uppercase">
+                  Admin
                 </span>
               </div>
-              <p className="text-[11px] text-slate-400">Lagos Life Swarm Telemetry & Access Control</p>
+              <p className="text-[10px] sm:text-[11px] text-slate-400 truncate hidden xs:block">
+                Lagos Life Swarm Telemetry
+              </p>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          {/* Quick Actions */}
+          <div className="flex items-center gap-1.5 sm:gap-2.5 shrink-0">
             <button
               onClick={fetchOverview}
               disabled={isLoading}
-              className="px-3 py-1.5 rounded-xl bg-slate-800/60 hover:bg-slate-800 text-slate-300 border border-slate-700/60 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 min-h-[36px] rounded-xl bg-slate-800/60 hover:bg-slate-800 text-slate-300 border border-slate-700/60 text-xs font-semibold flex items-center gap-1.5 transition-all cursor-pointer"
               title="Refresh Data"
             >
               <svg
@@ -334,10 +430,10 @@ export default function AdminDashboardPage() {
             <Link
               href="/"
               target="_blank"
-              className="px-3.5 py-1.5 rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 transition-all"
+              className="px-2.5 sm:px-3.5 py-1.5 min-h-[36px] rounded-xl bg-slate-800/80 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1 transition-all"
             >
               <span>Public Desk</span>
-              <span className="opacity-60">↗</span>
+              <span className="opacity-60 text-[10px]">↗</span>
             </Link>
 
             <button
@@ -345,7 +441,7 @@ export default function AdminDashboardPage() {
                 document.cookie = "ozama_admin_token=; Max-Age=0; path=/;";
                 setIsAuthenticated(false);
               }}
-              className="px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 text-xs font-semibold transition-all cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 min-h-[36px] rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-300 border border-rose-500/20 text-xs font-semibold transition-all cursor-pointer"
             >
               Exit
             </button>
@@ -353,196 +449,250 @@ export default function AdminDashboardPage() {
         </div>
       </header>
 
-      {/* Main Content Area */}
-      <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-6">
-        
-        {/* ========================================================= */}
-        {/* SWARM STATUS TOGGLE CONTROL PANEL (CRUCIAL USER REQUEST) */}
-        {/* ========================================================= */}
-        <section className={`rounded-3xl border p-6 sm:p-7 backdrop-blur-xl transition-all shadow-2xl relative overflow-hidden ${
-          systemStatus.isLive
-            ? "bg-gradient-to-br from-[#0c1c1a]/95 via-[#0a1622]/95 to-[#070b14]/95 border-emerald-500/30 shadow-emerald-950/20"
-            : "bg-gradient-to-br from-[#210e14]/95 via-[#180e1a]/95 to-[#070b14]/95 border-rose-500/30 shadow-rose-950/20"
-        }`}>
-          {/* Subtle Ambient Radial Glow */}
-          <div className={`absolute top-0 right-0 w-80 h-80 rounded-full blur-3xl pointer-events-none opacity-20 ${
-            systemStatus.isLive ? "bg-emerald-500" : "bg-rose-500"
-          }`} />
+      {/* Main Content */}
+      <main className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8 py-5 sm:py-8 space-y-5 sm:space-y-6">
 
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6 relative z-10">
-            {/* Status Information */}
-            <div className="space-y-2">
-              <div className="flex items-center gap-2.5 flex-wrap">
-                <span className="text-xs font-bold uppercase tracking-widest text-slate-400">
-                  Global Public Site Activity Control
+        {/* Global Feedback Banner */}
+        {statusSaveSuccess && (
+          <div className="p-3 sm:p-4 rounded-2xl bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 text-xs sm:text-sm font-semibold flex items-center gap-2 animate-in fade-in">
+            <span>✓</span>
+            <span>{statusSaveSuccess}</span>
+          </div>
+        )}
+
+        {ipActionFeedback && (
+          <div className="p-3 sm:p-4 rounded-2xl bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs sm:text-sm font-semibold flex items-center gap-2 animate-in fade-in">
+            <span>ℹ</span>
+            <span>{ipActionFeedback}</span>
+          </div>
+        )}
+
+        {/* ========================================================= */}
+        {/* SECTION 1: GLOBAL KILL SWITCH (USER EXPLICIT REQUIREMENT) */}
+        {/* ========================================================= */}
+        <section className={`rounded-3xl border p-5 sm:p-7 backdrop-blur-xl transition-all shadow-2xl relative overflow-hidden ${
+          tempKillSwitch
+            ? "bg-gradient-to-br from-[#2f0c13] via-[#1f0a12] to-[#070b14] border-rose-500/50 shadow-rose-950/40"
+            : "bg-gradient-to-br from-[#0c1824] via-[#09121d] to-[#070b14] border-slate-700/70"
+        }`}>
+          <div className="flex flex-col lg:flex-row lg:items-start justify-between gap-5 relative z-10">
+            <div className="space-y-2 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] sm:text-xs font-extrabold uppercase tracking-widest text-slate-400">
+                  CRITICAL ACCESS CONTROL
                 </span>
-                <span className={`inline-flex items-center gap-1.5 px-3 py-0.5 rounded-full text-xs font-bold border ${
-                  systemStatus.isLive
-                    ? "bg-emerald-500/20 text-emerald-300 border-emerald-500/40"
-                    : "bg-rose-500/20 text-rose-300 border-rose-500/40"
+                <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold border ${
+                  tempKillSwitch
+                    ? "bg-rose-500/25 text-rose-300 border-rose-500/50"
+                    : "bg-slate-800 text-slate-300 border-slate-700"
                 }`}>
                   <span className={`w-2 h-2 rounded-full ${
-                    systemStatus.isLive ? "bg-emerald-400 animate-pulse" : "bg-rose-500 animate-ping"
+                    tempKillSwitch ? "bg-rose-500 animate-ping" : "bg-emerald-400"
                   }`} />
-                  {systemStatus.isLive ? "STATUS: LIVE (OPERATIONAL)" : "STATUS: DOWN (MAINTENANCE)"}
+                  {tempKillSwitch ? "KILL SWITCH ENGAGED (BLACKOUT)" : "KILL SWITCH: OFF (NORMAL)"}
                 </span>
-                {statusSaveSuccess && (
-                  <span className="text-xs font-semibold text-emerald-400 animate-in fade-in">
-                    ✓ Updated on server & public site!
-                  </span>
-                )}
               </div>
 
-              <h2 className="text-2xl sm:text-3xl font-extrabold text-white font-display tracking-tight flex items-center gap-2">
-                {systemStatus.isLive ? (
-                  <>
-                    <span className="text-emerald-400">🟢 Swarm Is Live</span>
-                    <span className="text-slate-400 font-light text-base sm:text-lg">
-                      — Public users can fund without interruption
-                    </span>
-                  </>
-                ) : (
-                  <>
-                    <span className="text-rose-400">🔴 Swarm Is Down</span>
-                    <span className="text-slate-400 font-light text-base sm:text-lg">
-                      — Public desk disabled with maintenance notice
-                    </span>
-                  </>
-                )}
+              <h2 className="text-xl sm:text-2xl font-black text-white font-display tracking-tight flex items-center gap-2">
+                <span>⚡ Global Kill Switch Toggle</span>
               </h2>
 
-              <p className="text-xs sm:text-sm text-slate-400 max-w-2xl leading-relaxed">
-                {systemStatus.isLive
-                  ? "All dispatch workers, bot balance inflations, and player search endpoints are active. Toggling this Down will immediately block public submissions on /api/fund and render a maintenance banner on the homepage."
-                  : "Funding desk is currently locked. The public site displays the Swarm as offline and rejects incoming funding requests."}
+              <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
+                When activated, the public site completely hides the username inputs, funding tiers, and activity cards.
+                The homepage will <strong>ONLY display your custom message below</strong>.
               </p>
             </div>
 
-            {/* Big Interactive Toggle Button Switch */}
-            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+            {/* Big Toggle Buttons */}
+            <div className="flex sm:flex-row items-stretch gap-2.5 shrink-0">
               <button
                 type="button"
-                onClick={() => handleQuickToggle(true)}
+                onClick={() => handleToggleKillSwitch(false)}
                 disabled={isUpdatingStatus}
-                className={`px-5 py-3.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2.5 transition-all cursor-pointer border ${
-                  systemStatus.isLive
-                    ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-lg shadow-emerald-500/25 ring-2 ring-emerald-400/50"
-                    : "bg-slate-900/80 hover:bg-emerald-500/10 text-slate-400 hover:text-emerald-300 border-slate-700/80"
+                className={`flex-1 sm:flex-none px-4 sm:px-5 py-3 rounded-2xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer border min-h-[46px] ${
+                  !tempKillSwitch
+                    ? "bg-emerald-500 text-slate-950 border-emerald-400 shadow-md ring-2 ring-emerald-400/40 font-extrabold"
+                    : "bg-slate-900/80 hover:bg-slate-800 text-slate-400 border-slate-700"
                 }`}
               >
-                <span className="w-2.5 h-2.5 rounded-full bg-emerald-400" />
-                <span>Switch to LIVE</span>
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                <span>DEACTIVATE</span>
               </button>
 
               <button
                 type="button"
-                onClick={() => handleQuickToggle(false)}
+                onClick={() => handleToggleKillSwitch(true)}
                 disabled={isUpdatingStatus}
-                className={`px-5 py-3.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2.5 transition-all cursor-pointer border ${
-                  !systemStatus.isLive
-                    ? "bg-rose-500 text-white border-rose-400 shadow-lg shadow-rose-500/25 ring-2 ring-rose-400/50"
-                    : "bg-slate-900/80 hover:bg-rose-500/10 text-slate-400 hover:text-rose-300 border-slate-700/80"
+                className={`flex-1 sm:flex-none px-4 sm:px-5 py-3 rounded-2xl font-bold text-xs sm:text-sm flex items-center justify-center gap-2 transition-all cursor-pointer border min-h-[46px] ${
+                  tempKillSwitch
+                    ? "bg-rose-500 text-white border-rose-400 shadow-xl shadow-rose-950 ring-2 ring-rose-400/50 font-extrabold"
+                    : "bg-slate-900/80 hover:bg-rose-500/20 text-slate-400 hover:text-rose-300 border-slate-700"
                 }`}
               >
-                <span className="w-2.5 h-2.5 rounded-full bg-rose-400" />
-                <span>Switch to DOWN</span>
+                <span className="w-2 h-2 rounded-full bg-rose-400" />
+                <span>ENGAGE KILL SWITCH</span>
               </button>
             </div>
           </div>
 
-          {/* Optional Maintenance Notice Input */}
-          <div className="mt-5 pt-4 border-t border-slate-800/80 flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
-            <div className="flex-1">
-              <label className="block text-[11px] font-bold text-slate-400 uppercase tracking-wider mb-1">
-                Custom Maintenance Announcement Message (optional)
-              </label>
-              <input
-                type="text"
-                value={tempMaintenanceMsg}
-                onChange={(e) => setTempMaintenanceMsg(e.target.value)}
-                placeholder="e.g. Swarm nodes recharging daily balances. Re-opening at 12:00 UTC."
-                className="w-full bg-[#080d18] border border-slate-700/80 rounded-xl px-3.5 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-emerald-500/60"
+          {/* Editable Announcement Message for Kill Switch */}
+          <div className="mt-4 pt-4 border-t border-slate-800/80 space-y-2">
+            <label className="block text-[11px] font-bold text-slate-300 uppercase tracking-wider">
+              Kill Switch Public Message (Editable by Admin):
+            </label>
+            <div className="flex flex-col sm:flex-row items-stretch gap-2.5">
+              <textarea
+                rows={2}
+                value={tempKillSwitchMsg}
+                onChange={(e) => setTempKillSwitchMsg(e.target.value)}
+                placeholder="Message to display to all visitors when the kill switch is active..."
+                className="flex-1 bg-[#080d18] border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-rose-500/80 resize-none font-medium leading-relaxed"
               />
+              <button
+                onClick={() => handleSaveSettings({ killSwitchMessage: tempKillSwitchMsg })}
+                disabled={isUpdatingStatus}
+                className="px-4 py-2.5 min-h-[42px] rounded-xl bg-slate-800 hover:bg-slate-700 text-white border border-slate-600 text-xs font-bold transition-all cursor-pointer shrink-0 flex items-center justify-center"
+              >
+                {isUpdatingStatus ? "Saving..." : "Save Announcement"}
+              </button>
             </div>
-            <button
-              onClick={() => handleSaveStatus()}
-              disabled={isUpdatingStatus}
-              className="self-end sm:self-auto px-4 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-white border border-slate-600 text-xs font-semibold transition-all cursor-pointer"
-            >
-              {isUpdatingStatus ? "Saving..." : "Save Message"}
-            </button>
           </div>
         </section>
 
         {/* ========================================================= */}
-        {/* STATS OVERVIEW CARDS */}
+        {/* SECTION 2: SWARM PUBLIC STATUS (OPERATIONAL VS MAINTENANCE) */}
         {/* ========================================================= */}
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-          <div className="bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-5 backdrop-blur-md">
-            <div className="flex items-center justify-between text-slate-400 mb-2">
-              <span className="text-xs font-bold uppercase tracking-wider">Total Volume Delivered</span>
-              <span className="text-emerald-400 text-base">₦</span>
+        <section className={`rounded-3xl border p-5 sm:p-7 backdrop-blur-xl transition-all shadow-xl relative overflow-hidden ${
+          tempIsLive
+            ? "bg-[#0b161c]/90 border-emerald-500/30"
+            : "bg-[#181119]/90 border-amber-500/30"
+        }`}>
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <span className="text-[10px] font-bold uppercase tracking-widest text-slate-400">
+                  Swarm Execution Switch
+                </span>
+                <span className={`px-2 py-0.5 rounded-full text-[10px] font-bold border ${
+                  tempIsLive
+                    ? "bg-emerald-500/15 text-emerald-300 border-emerald-500/30"
+                    : "bg-amber-500/15 text-amber-300 border-amber-500/30"
+                }`}>
+                  {tempIsLive ? "SWARM ONLINE" : "SWARM PAUSED"}
+                </span>
+              </div>
+              <h3 className="text-base sm:text-lg font-bold text-white">
+                {tempIsLive ? "🟢 Normal Swarm Operations" : "🟡 Maintenance Pause"}
+              </h3>
+              <p className="text-xs text-slate-400 mt-0.5">
+                Disable swarm without triggering total blackout (site remains up, execute button shows maintenance).
+              </p>
             </div>
-            <div className="text-2xl sm:text-3xl font-extrabold text-white font-display">
+
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => handleToggleSwarmLive(true)}
+                disabled={isUpdatingStatus}
+                className={`flex-1 sm:flex-none px-4 py-2.5 rounded-xl text-xs font-bold transition-all border min-h-[42px] cursor-pointer ${
+                  tempIsLive
+                    ? "bg-emerald-500 text-slate-950 border-emerald-400"
+                    : "bg-slate-900 text-slate-400 border-slate-700"
+                }`}
+              >
+                Swarm LIVE
+              </button>
+              <button
+                type="button"
+                onClick={() => handleToggleSwarmLive(false)}
+                disabled={isUpdatingStatus}
+                className={`flex-1 sm:flex-none px-4 py-2.5 rounded-xl text-xs font-bold transition-all border min-h-[42px] cursor-pointer ${
+                  !tempIsLive
+                    ? "bg-amber-500 text-slate-950 border-amber-400"
+                    : "bg-slate-900 text-slate-400 border-slate-700"
+                }`}
+              >
+                Swarm PAUSED
+              </button>
+            </div>
+          </div>
+        </section>
+
+        {/* ========================================================= */}
+        {/* STATS OVERVIEW CARDS (Responsive Grid) */}
+        {/* ========================================================= */}
+        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+          <div className="bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-4 sm:p-5">
+            <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+              Delivered Volume
+            </div>
+            <div className="text-xl sm:text-2xl font-black text-white font-display">
               {formatCompactNaira(stats.totalAmount)}
             </div>
-            <div className="text-[11px] text-slate-400 mt-1 font-mono">
-              ₦{stats.totalAmount.toLocaleString()} exact
+            <div className="text-[10px] text-slate-400 mt-1 truncate font-mono">
+              ₦{stats.totalAmount.toLocaleString()}
             </div>
           </div>
 
-          <div className="bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-5 backdrop-blur-md">
-            <div className="flex items-center justify-between text-slate-400 mb-2">
-              <span className="text-xs font-bold uppercase tracking-wider">Registered Players</span>
-              <span className="text-teal-400 text-sm">👥</span>
+          <div className="bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-4 sm:p-5">
+            <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+              Unique Players
             </div>
-            <div className="text-2xl sm:text-3xl font-extrabold text-white font-display">
+            <div className="text-xl sm:text-2xl font-black text-white font-display">
               {stats.totalPlayers}
             </div>
-            <div className="text-[11px] text-slate-400 mt-1">Unique target usernames funded</div>
+            <div className="text-[10px] text-slate-400 mt-1">Lagos Life accounts</div>
           </div>
 
-          <div className="bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-5 backdrop-blur-md">
-            <div className="flex items-center justify-between text-slate-400 mb-2">
-              <span className="text-xs font-bold uppercase tracking-wider">Total Orders</span>
-              <span className="text-sky-400 text-sm">📦</span>
+          <div className="bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-4 sm:p-5">
+            <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+              Total Orders
             </div>
-            <div className="text-2xl sm:text-3xl font-extrabold text-white font-display">
+            <div className="text-xl sm:text-2xl font-black text-white font-display">
               {stats.totalOrders}
             </div>
-            <div className="text-[11px] text-slate-400 mt-1 flex items-center gap-2">
-              <span className="text-emerald-400 font-semibold">{stats.completedOrders} completed</span>
-              <span>•</span>
-              <span className="text-rose-400 font-semibold">{stats.failedOrders} failed</span>
+            <div className="text-[10px] text-emerald-400 mt-1 font-semibold">
+              {stats.completedOrders} completed
             </div>
           </div>
 
-          <div className="bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-5 backdrop-blur-md">
-            <div className="flex items-center justify-between text-slate-400 mb-2">
-              <span className="text-xs font-bold uppercase tracking-wider">Bot Swarm Nodes</span>
-              <span className="text-amber-400 text-sm">⚡</span>
+          <div className="bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-4 sm:p-5">
+            <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+              Swarm Nodes
             </div>
-            <div className="text-2xl sm:text-3xl font-extrabold text-white font-display">
+            <div className="text-xl sm:text-2xl font-black text-white font-display">
               {stats.botPoolSize}
             </div>
-            <div className="text-[11px] text-emerald-400 mt-1 font-semibold flex items-center gap-1.5">
+            <div className="text-[10px] text-emerald-400 mt-1 flex items-center gap-1 font-semibold">
               <span className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-              <span>Rotational Failover Ready</span>
+              <span>Pool Ready</span>
+            </div>
+          </div>
+
+          <div className="col-span-2 lg:col-span-1 bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-4 sm:p-5">
+            <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+              Blocked IPs
+            </div>
+            <div className="text-xl sm:text-2xl font-black text-rose-400 font-display">
+              {blockedIps.length}
+            </div>
+            <div className="text-[10px] text-rose-400/80 mt-1 font-semibold">
+              Restricted from API
             </div>
           </div>
         </div>
 
         {/* ========================================================= */}
-        {/* USERS LIST & ORDERS TABS */}
+        {/* TAB CONTROLS & TABLES (Touch-friendly on mobile) */}
         {/* ========================================================= */}
         <div className="bg-[#0e1626]/90 border border-slate-800/80 rounded-3xl backdrop-blur-xl shadow-xl overflow-hidden">
-          {/* Tab Header & Search Toolbar */}
-          <div className="p-4 sm:p-6 border-b border-slate-800/80 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-4">
-            {/* Tabs */}
-            <div className="flex items-center gap-2 bg-[#080d18] p-1.5 rounded-2xl border border-slate-800">
+          {/* Tab Headers */}
+          <div className="p-3 sm:p-5 border-b border-slate-800/80 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+            {/* Horizontal Scrollable Tabs */}
+            <div className="flex items-center gap-1.5 bg-[#080d18] p-1 rounded-2xl border border-slate-800 overflow-x-auto no-scrollbar">
               <button
                 onClick={() => setActiveTab("users")}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                className={`px-3.5 py-2 min-h-[38px] rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
                   activeTab === "users"
                     ? "bg-emerald-500 text-slate-950 shadow-md"
                     : "text-slate-400 hover:text-white"
@@ -558,7 +708,7 @@ export default function AdminDashboardPage() {
 
               <button
                 onClick={() => setActiveTab("orders")}
-                className={`px-4 py-2 rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-2 ${
+                className={`px-3.5 py-2 min-h-[38px] rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
                   activeTab === "orders"
                     ? "bg-emerald-500 text-slate-950 shadow-md"
                     : "text-slate-400 hover:text-white"
@@ -571,188 +721,328 @@ export default function AdminDashboardPage() {
                   {orders.length}
                 </span>
               </button>
+
+              <button
+                onClick={() => setActiveTab("security")}
+                className={`px-3.5 py-2 min-h-[38px] rounded-xl text-xs font-bold transition-all cursor-pointer flex items-center gap-1.5 shrink-0 ${
+                  activeTab === "security"
+                    ? "bg-rose-500 text-white shadow-md"
+                    : "text-slate-400 hover:text-white"
+                }`}
+              >
+                <span>🚫 Blocked IPs</span>
+                <span className={`px-1.5 py-0.2 rounded-full text-[10px] ${
+                  activeTab === "security" ? "bg-white/20 text-white" : "bg-slate-800 text-slate-300"
+                }`}>
+                  {blockedIps.length}
+                </span>
+              </button>
             </div>
 
             {/* Search Input & Status Filter */}
-            <div className="flex items-center gap-3">
-              <div className="relative flex-1 sm:w-64">
-                <span className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500 text-xs">🔍</span>
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="Filter by username..."
-                  className="w-full bg-[#080d18] border border-slate-700/80 rounded-xl pl-9 pr-3.5 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-emerald-500/60"
-                />
-              </div>
+            {activeTab !== "security" && (
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1 sm:w-60">
+                  <span className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-500 text-xs">🔍</span>
+                  <input
+                    type="text"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    placeholder="Search player handle..."
+                    className="w-full bg-[#080d18] border border-slate-700/80 rounded-xl pl-8 pr-3 py-2 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-emerald-500/60"
+                  />
+                </div>
 
-              {activeTab === "orders" && (
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
-                  className="bg-[#080d18] border border-slate-700/80 rounded-xl px-3 py-2 text-xs text-slate-300 focus:outline-none focus:border-emerald-500/60 cursor-pointer"
-                >
-                  <option value="all">All Statuses</option>
-                  <option value="completed">Completed</option>
-                  <option value="streaming">Streaming</option>
-                  <option value="failed">Failed</option>
-                  <option value="queued">Queued</option>
-                </select>
-              )}
-            </div>
+                {activeTab === "orders" && (
+                  <select
+                    value={statusFilter}
+                    onChange={(e) => setStatusFilter(e.target.value)}
+                    className="bg-[#080d18] border border-slate-700/80 rounded-xl px-2.5 py-2 text-xs text-slate-300 focus:outline-none focus:border-emerald-500/60 cursor-pointer"
+                  >
+                    <option value="all">All</option>
+                    <option value="completed">Completed</option>
+                    <option value="streaming">Streaming</option>
+                    <option value="failed">Failed</option>
+                    <option value="queued">Queued</option>
+                  </select>
+                )}
+              </div>
+            )}
           </div>
 
-          {/* Tab 1: Users Directory Table */}
+          {/* TAB 1: USERS DIRECTORY */}
           {activeTab === "users" && (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className="w-full text-left text-xs min-w-[700px]">
                 <thead className="bg-[#080d18]/70 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800/80">
                   <tr>
-                    <th className="py-3.5 px-6">Player Username</th>
-                    <th className="py-3.5 px-6">Total Naira Received</th>
-                    <th className="py-3.5 px-6">Orders Count</th>
-                    <th className="py-3.5 px-6">Last Known Status</th>
-                    <th className="py-3.5 px-6">Last Activity</th>
-                    <th className="py-3.5 px-6 text-right">Lagos Life Profile</th>
+                    <th className="py-3 px-4 sm:px-6">Player Handle</th>
+                    <th className="py-3 px-4 sm:px-6">Total Naira</th>
+                    <th className="py-3 px-4 sm:px-6">Orders</th>
+                    <th className="py-3 px-4 sm:px-6">Status</th>
+                    <th className="py-3 px-4 sm:px-6">Client IP</th>
+                    <th className="py-3 px-4 sm:px-6 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60 font-medium">
                   {filteredUsers.length === 0 ? (
                     <tr>
-                      <td colSpan={6} className="py-12 text-center text-slate-500 font-mono">
-                        No players found matching &ldquo;{searchQuery}&rdquo;
+                      <td colSpan={6} className="py-10 text-center text-slate-500 font-mono">
+                        No players found.
                       </td>
                     </tr>
                   ) : (
-                    filteredUsers.map((user) => (
-                      <tr key={user.username} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="py-4 px-6">
-                          <div className="flex items-center gap-2">
-                            <span className="w-7 h-7 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center font-bold text-xs">
-                              {user.username.charAt(0).toUpperCase()}
-                            </span>
-                            <div>
+                    filteredUsers.map((user) => {
+                      const isStaleStreaming =
+                        user.lastStatus === "streaming" &&
+                        Date.now() - new Date(user.lastActive).getTime() > 2 * 60 * 1000;
+
+                      return (
+                        <tr key={user.username} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3.5 px-4 sm:px-6">
+                            <div className="flex items-center gap-2">
+                              <span className="w-7 h-7 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center justify-center font-bold text-xs shrink-0">
+                                {user.username.charAt(0).toUpperCase()}
+                              </span>
                               <span className="font-bold text-white text-sm">@{user.username}</span>
                             </div>
-                          </div>
-                        </td>
-                        <td className="py-4 px-6 font-mono text-emerald-400 font-bold text-sm">
-                          ₦{user.totalFunded.toLocaleString()}
-                        </td>
-                        <td className="py-4 px-6 text-slate-300">
-                          <span className="px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700/60 font-mono text-[11px]">
-                            {user.totalOrders} {user.totalOrders === 1 ? "order" : "orders"}
-                          </span>
-                        </td>
-                        <td className="py-4 px-6">
-                          <span className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
-                            user.lastStatus === "completed"
-                              ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-                              : user.lastStatus === "failed"
-                              ? "bg-rose-500/10 text-rose-400 border-rose-500/30"
-                              : "bg-sky-500/10 text-sky-400 border-sky-500/30"
-                          }`}>
-                            <span className={`w-1.5 h-1.5 rounded-full ${
-                              user.lastStatus === "completed"
-                                ? "bg-emerald-400"
-                                : user.lastStatus === "failed"
-                                ? "bg-rose-400"
-                                : "bg-sky-400 animate-pulse"
-                            }`} />
-                            {user.lastStatus}
-                          </span>
-                        </td>
-                        <td className="py-4 px-6 text-slate-400 font-mono text-[11px]">
-                          {formatDate(user.lastActive)}
-                        </td>
-                        <td className="py-4 px-6 text-right">
-                          <a
-                            href={`https://lagoslife.eliysites.com`}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="inline-flex items-center gap-1 text-[11px] text-emerald-400 hover:text-emerald-300 hover:underline font-semibold"
-                          >
-                            <span>Open In Game</span>
-                            <span>↗</span>
-                          </a>
-                        </td>
-                      </tr>
-                    ))
+                          </td>
+                          <td className="py-3.5 px-4 sm:px-6 font-mono text-emerald-400 font-bold text-sm">
+                            ₦{user.totalFunded.toLocaleString()}
+                          </td>
+                          <td className="py-3.5 px-4 sm:px-6 text-slate-300">
+                            <span className="px-2 py-0.5 rounded-md bg-slate-800 border border-slate-700/60 font-mono text-[11px]">
+                              {user.totalOrders} {user.totalOrders === 1 ? "order" : "orders"}
+                            </span>
+                          </td>
+                          <td className="py-3.5 px-4 sm:px-6">
+                            {isStaleStreaming ? (
+                              <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider bg-slate-800 text-slate-400 border border-slate-700">
+                                <span className="w-1.5 h-1.5 rounded-full bg-slate-500" />
+                                TIMED OUT
+                              </span>
+                            ) : (
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                                user.lastStatus === "completed"
+                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                                  : user.lastStatus === "failed"
+                                  ? "bg-rose-500/10 text-rose-400 border-rose-500/30"
+                                  : "bg-sky-500/10 text-sky-400 border-sky-500/30"
+                              }`}>
+                                <span className={`w-1.5 h-1.5 rounded-full ${
+                                  user.lastStatus === "completed"
+                                    ? "bg-emerald-400"
+                                    : user.lastStatus === "failed"
+                                    ? "bg-rose-400"
+                                    : "bg-sky-400 animate-pulse"
+                                }`} />
+                                {user.lastStatus}
+                              </span>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-4 sm:px-6 font-mono text-slate-400 text-[11px]">
+                            {user.lastIp || "—"}
+                          </td>
+                          <td className="py-3.5 px-4 sm:px-6 text-right space-x-2">
+                            {user.lastIp && (
+                              <button
+                                onClick={() => handleBlockIp(user.lastIp!, `Blocked player @${user.username}`)}
+                                disabled={isBlockingIp}
+                                className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 border border-rose-500/20 text-[11px] font-bold transition-all cursor-pointer"
+                                title="Block this IP address immediately"
+                              >
+                                🚫 Block IP
+                              </button>
+                            )}
+                            <a
+                              href="https://lagoslife.eliysites.com"
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="text-[11px] text-emerald-400 hover:text-emerald-300 hover:underline font-semibold"
+                            >
+                              In Game ↗
+                            </a>
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
             </div>
           )}
 
-          {/* Tab 2: Orders History Table */}
+          {/* TAB 2: ORDERS HISTORY */}
           {activeTab === "orders" && (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
+              <table className="w-full text-left text-xs min-w-[800px]">
                 <thead className="bg-[#080d18]/70 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800/80">
                   <tr>
-                    <th className="py-3.5 px-6">Order ID</th>
-                    <th className="py-3.5 px-6">Target Player</th>
-                    <th className="py-3.5 px-6">Requested</th>
-                    <th className="py-3.5 px-6">Delivered</th>
-                    <th className="py-3.5 px-6">Status & Progress</th>
-                    <th className="py-3.5 px-6">Batches</th>
-                    <th className="py-3.5 px-6">Created At</th>
+                    <th className="py-3 px-4 sm:px-6">Order ID</th>
+                    <th className="py-3 px-4 sm:px-6">Player</th>
+                    <th className="py-3 px-4 sm:px-6">Requested</th>
+                    <th className="py-3 px-4 sm:px-6">Delivered</th>
+                    <th className="py-3 px-4 sm:px-6">Status & Progress</th>
+                    <th className="py-3 px-4 sm:px-6">Client IP</th>
+                    <th className="py-3 px-4 sm:px-6 text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800/60 font-medium">
                   {filteredOrders.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="py-12 text-center text-slate-500 font-mono">
+                      <td colSpan={7} className="py-10 text-center text-slate-500 font-mono">
                         No orders recorded yet.
                       </td>
                     </tr>
                   ) : (
-                    filteredOrders.map((order) => (
-                      <tr key={order.id} className="hover:bg-slate-800/30 transition-colors">
-                        <td className="py-4 px-6 font-mono text-slate-400 text-[11px]">
-                          {order.id}
-                        </td>
-                        <td className="py-4 px-6 font-bold text-white">
-                          @{order.username}
-                        </td>
-                        <td className="py-4 px-6 font-mono text-slate-300 font-semibold">
-                          ₦{order.amount.toLocaleString()}
-                        </td>
-                        <td className="py-4 px-6 font-mono text-emerald-400 font-bold">
-                          ₦{(order.amountDelivered || 0).toLocaleString()}
-                        </td>
-                        <td className="py-4 px-6">
-                          <div className="flex items-center gap-2">
-                            <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
-                              order.status === "completed"
-                                ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
-                                : order.status === "failed"
-                                ? "bg-rose-500/10 text-rose-400 border-rose-500/30"
-                                : "bg-sky-500/10 text-sky-400 border-sky-500/30"
-                            }`}>
-                              {order.status}
-                            </span>
-                            <span className="text-[11px] font-mono text-slate-400">
-                              {order.percentComplete}%
-                            </span>
-                          </div>
-                          {order.error && (
-                            <div className="text-[10px] text-rose-400 mt-1 truncate max-w-xs" title={order.error}>
-                              ⚠️ {order.error}
+                    filteredOrders.map((order) => {
+                      const stale = isOrderStale(order);
+                      const displayStatus = stale ? "failed" : order.status;
+
+                      return (
+                        <tr key={order.id} className="hover:bg-slate-800/30 transition-colors">
+                          <td className="py-3.5 px-4 sm:px-6 font-mono text-slate-400 text-[11px]">
+                            {order.id}
+                          </td>
+                          <td className="py-3.5 px-4 sm:px-6 font-bold text-white">
+                            @{order.username}
+                          </td>
+                          <td className="py-3.5 px-4 sm:px-6 font-mono text-slate-300 font-semibold">
+                            ₦{order.amount.toLocaleString()}
+                          </td>
+                          <td className="py-3.5 px-4 sm:px-6 font-mono text-emerald-400 font-bold">
+                            ₦{(order.amountDelivered || 0).toLocaleString()}
+                          </td>
+                          <td className="py-3.5 px-4 sm:px-6">
+                            <div className="flex items-center gap-2">
+                              <span className={`inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold uppercase tracking-wider border ${
+                                displayStatus === "completed"
+                                  ? "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
+                                  : displayStatus === "failed"
+                                  ? "bg-rose-500/10 text-rose-400 border-rose-500/30"
+                                  : "bg-sky-500/10 text-sky-400 border-sky-500/30"
+                              }`}>
+                                {stale ? "TIMED OUT" : order.status}
+                              </span>
+                              <span className="text-[11px] font-mono text-slate-400">
+                                {order.percentComplete}%
+                              </span>
                             </div>
-                          )}
-                        </td>
-                        <td className="py-4 px-6 font-mono text-slate-400 text-[11px]">
-                          {order.batches?.length || 0} batches
-                        </td>
-                        <td className="py-4 px-6 text-slate-400 font-mono text-[11px]">
-                          {formatDate(order.createdAt)}
-                        </td>
-                      </tr>
-                    ))
+                            {(order.error || stale) && (
+                              <div className="text-[10px] text-rose-400 mt-0.5 truncate max-w-xs">
+                                ⚠️ {stale ? "Session timed out / closed by user" : order.error}
+                              </div>
+                            )}
+                          </td>
+                          <td className="py-3.5 px-4 sm:px-6 font-mono text-slate-400 text-[11px]">
+                            {order.clientIp || "—"}
+                          </td>
+                          <td className="py-3.5 px-4 sm:px-6 text-right">
+                            {order.clientIp && (
+                              <button
+                                onClick={() => handleBlockIp(order.clientIp!, `Blocked from Order ${order.id}`)}
+                                disabled={isBlockingIp}
+                                className="px-2.5 py-1 rounded-lg bg-rose-500/10 hover:bg-rose-500/25 text-rose-300 border border-rose-500/20 text-[11px] font-bold transition-all cursor-pointer"
+                              >
+                                🚫 Block IP
+                              </button>
+                            )}
+                          </td>
+                        </tr>
+                      );
+                    })
                   )}
                 </tbody>
               </table>
+            </div>
+          )}
+
+          {/* TAB 3: SECURITY & BLOCKED IPS */}
+          {activeTab === "security" && (
+            <div className="p-4 sm:p-6 space-y-6">
+              {/* Form: Block Any IP Immediately */}
+              <div className="p-4 sm:p-5 rounded-2xl bg-[#080d18] border border-slate-800 space-y-3">
+                <h4 className="text-xs sm:text-sm font-bold text-white uppercase tracking-wider flex items-center gap-2">
+                  <span>🚫</span>
+                  <span>Block Any IP Address Immediately</span>
+                </h4>
+                <p className="text-xs text-slate-400">
+                  Instantly revokes access to `/api/fund`, `/api/verify-user`, and `/api/status` for this IP address.
+                </p>
+
+                <div className="flex flex-col sm:flex-row items-stretch gap-2.5 pt-1">
+                  <input
+                    type="text"
+                    value={manualIp}
+                    onChange={(e) => setManualIp(e.target.value)}
+                    placeholder="Enter IP (e.g. 102.89.45.12)..."
+                    className="flex-1 bg-[#0e1626] border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-rose-500/80 font-mono"
+                  />
+                  <input
+                    type="text"
+                    value={manualReason}
+                    onChange={(e) => setManualReason(e.target.value)}
+                    placeholder="Reason (e.g. Abusive automated requests)..."
+                    className="flex-1 bg-[#0e1626] border border-slate-700 rounded-xl px-3.5 py-2.5 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-rose-500/80"
+                  />
+                  <button
+                    onClick={() => handleBlockIp(manualIp, manualReason || "Blocked by administrator")}
+                    disabled={isBlockingIp || !manualIp.trim()}
+                    className="px-5 py-2.5 min-h-[42px] rounded-xl bg-rose-500 hover:bg-rose-400 disabled:opacity-50 text-white font-bold text-xs transition-all cursor-pointer shrink-0"
+                  >
+                    {isBlockingIp ? "Blocking..." : "Block IP Now"}
+                  </button>
+                </div>
+              </div>
+
+              {/* List of Blocked IPs */}
+              <div>
+                <h4 className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-3">
+                  Currently Blocked IP Addresses ({blockedIps.length})
+                </h4>
+
+                {blockedIps.length === 0 ? (
+                  <div className="p-8 text-center text-slate-500 font-mono text-xs border border-dashed border-slate-800 rounded-2xl">
+                    No IP addresses are currently blocked.
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs min-w-[600px]">
+                      <thead className="bg-[#080d18]/70 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800/80">
+                        <tr>
+                          <th className="py-3 px-4 sm:px-6">Blocked IP</th>
+                          <th className="py-3 px-4 sm:px-6">Reason</th>
+                          <th className="py-3 px-4 sm:px-6">Date Restricted</th>
+                          <th className="py-3 px-4 sm:px-6 text-right">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-slate-800/60 font-medium">
+                        {blockedIps.map((b) => (
+                          <tr key={b.ip} className="hover:bg-slate-800/30 transition-colors">
+                            <td className="py-3.5 px-4 sm:px-6 font-mono font-bold text-rose-400">
+                              {b.ip}
+                            </td>
+                            <td className="py-3.5 px-4 sm:px-6 text-slate-300">
+                              {b.reason || "Manual restriction"}
+                            </td>
+                            <td className="py-3.5 px-4 sm:px-6 text-slate-400 font-mono text-[11px]">
+                              {formatDate(b.blockedAt)}
+                            </td>
+                            <td className="py-3.5 px-4 sm:px-6 text-right">
+                              <button
+                                onClick={() => handleUnblockIp(b.ip)}
+                                className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-emerald-500 hover:text-slate-950 text-slate-300 border border-slate-700 text-xs font-bold transition-all cursor-pointer"
+                              >
+                                Unblock
+                              </button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>

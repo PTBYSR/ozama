@@ -11,7 +11,7 @@ export function maskUsername(username: string): string {
   return username.slice(0, 3) + "***" + username.slice(-1);
 }
 
-export async function createOrder(username: string, amount: number): Promise<OrderDoc> {
+export async function createOrder(username: string, amount: number, clientIp?: string): Promise<OrderDoc> {
   const id = generateOrderId();
   const now = new Date().toISOString();
   const botsNeeded = Math.min(TOTAL_BOT_POOL, Math.ceil(amount / 5_000_000));
@@ -27,6 +27,7 @@ export async function createOrder(username: string, amount: number): Promise<Ord
     batches: [],
     createdAt: now,
     updatedAt: now,
+    clientIp,
   };
 
   await dbAdapter.createOrder(order);

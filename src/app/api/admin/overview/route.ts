@@ -9,11 +9,12 @@ export async function GET(req: NextRequest) {
   }
 
   try {
-    const [settings, globalStats, users, orders] = await Promise.all([
+    const [settings, globalStats, users, orders, blockedIps] = await Promise.all([
       dbAdapter.getSystemSettings(),
       dbAdapter.getStats(),
       dbAdapter.getUserSummaries(),
       dbAdapter.getAllOrders(100),
+      dbAdapter.getBlockedIps(),
     ]);
 
     const completedCount = orders.filter((o) => o.status === "completed").length;
@@ -32,9 +33,11 @@ export async function GET(req: NextRequest) {
           failedOrders: failedCount,
           activeOrders: activeCount,
           botPoolSize: TOTAL_BOT_POOL,
+          blockedIpsCount: blockedIps.length,
         },
         users,
         orders,
+        blockedIps,
       },
       {
         headers: {

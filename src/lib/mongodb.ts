@@ -1,7 +1,7 @@
 import { MongoClient, Db } from "mongodb";
 import fs from "fs";
 import path from "path";
-import { OrderDoc, FundingLogDoc, SystemSettings, UserSummary } from "./types";
+import { OrderDoc, FundingLogDoc, SystemSettings, UserSummary, BlockedIpDoc } from "./types";
 import { cache, CACHE_TTL } from "./cache";
 
 const defaultAtlasUri =
@@ -292,6 +292,7 @@ export const dbAdapter = {
     const cacheKey = `all_orders:${limit}`;
     return await cache.getOrSet(cacheKey, CACHE_TTL.RECENT_ORDERS, async () => {
       const db = await getDb();
+      let rawOrders: OrderDoc[] = [];
       if (db) {
         try {
           const docs = await db
@@ -300,13 +301,42 @@ export const dbAdapter = {
             .sort({ createdAt: -1 })
             .limit(limit)
             .toArray();
-          return docs.map(({ _id, ...doc }: any) => doc as OrderDoc);
+          rawOrders = docs.map(({ _id, ...doc }: any) => doc as OrderDoc);
         } catch (err) {
           console.warn("MongoDB getAllOrders error:", err);
         }
       }
-      const store = localStore.get();
-      return store.orders.slice(0, limit);
+      if (rawOrders.length === 0) {
+        const store = localStore.get();
+        rawOrders = store.orders.slice(0, limit);
+      }
+
+      // Auto-cleanup stale in-progress orders (e.g. user closed tab or disconnected > 2 mins ago)
+      const now = Date.now();
+      const cleanedOrders = rawOrders.map((order) => {
+        const isActive = ["streaming", "allocating", "authenticating", "queued"].includes(order.status);
+        if (isActive) {
+          const lastTouch = new Date(order.updatedAt || order.createdAt).getTime();
+          if (now - lastTouch > 2 * 60 * 1000) {
+            const updated: OrderDoc = {
+              ...order,
+              status: "failed" as const,
+              error: order.error || "Session timed out or closed by user",
+              updatedAt: new Date(lastTouch).toISOString(),
+            };
+            if (db) {
+              db.collection("orders").updateOne(
+                { id: order.id },
+                { $set: { status: "failed", error: "Session timed out or closed by user" } }
+              ).catch(() => {});
+            }
+            return updated;
+          }
+        }
+        return order;
+      });
+
+      return cleanedOrders;
     });
   },
 
@@ -321,6 +351,8 @@ export const dbAdapter = {
             return {
               isLive: doc.isLive ?? true,
               maintenanceMessage: doc.maintenanceMessage || "",
+              killSwitch: doc.killSwitch ?? false,
+              killSwitchMessage: doc.killSwitchMessage || "Ozama is currently offline for system maintenance. Please check back shortly.",
               updatedAt: doc.updatedAt || new Date().toISOString(),
             };
           }
@@ -333,6 +365,8 @@ export const dbAdapter = {
         store.settings = {
           isLive: true,
           maintenanceMessage: "",
+          killSwitch: false,
+          killSwitchMessage: "Ozama is currently offline for system maintenance. Please check back shortly.",
           updatedAt: new Date().toISOString(),
         };
         localStore.save(store);
@@ -357,13 +391,24 @@ export const dbAdapter = {
     }
 
     const store = localStore.get();
-    const current = store.settings || { isLive: true, maintenanceMessage: "", updatedAt: now };
+    const current = store.settings || {
+      isLive: true,
+      maintenanceMessage: "",
+      killSwitch: false,
+      killSwitchMessage: "Ozama is currently offline for system maintenance. Please check back shortly.",
+      updatedAt: now,
+    };
     store.settings = {
       isLive: update.isLive !== undefined ? update.isLive : current.isLive,
       maintenanceMessage:
         update.maintenanceMessage !== undefined
           ? update.maintenanceMessage
           : current.maintenanceMessage,
+      killSwitch: update.killSwitch !== undefined ? update.killSwitch : current.killSwitch,
+      killSwitchMessage:
+        update.killSwitchMessage !== undefined
+          ? update.killSwitchMessage
+          : current.killSwitchMessage,
       updatedAt: now,
     };
     localStore.save(store);
@@ -395,11 +440,16 @@ export const dbAdapter = {
             failedOrders: 0,
             lastActive: order.createdAt,
             lastStatus: order.status,
+            lastIp: order.clientIp,
           };
           userMap.set(cleanUser, entry);
         }
 
         entry.totalOrders += 1;
+        if (order.clientIp && !entry.lastIp) {
+          entry.lastIp = order.clientIp;
+        }
+
         if (order.status === "completed") {
           entry.completedOrders += 1;
           entry.totalFunded += order.amountDelivered || order.amount || 0;
@@ -410,6 +460,7 @@ export const dbAdapter = {
         if (new Date(order.createdAt) >= new Date(entry.lastActive)) {
           entry.lastActive = order.createdAt;
           entry.lastStatus = order.status;
+          if (order.clientIp) entry.lastIp = order.clientIp;
         }
       }
 
@@ -417,6 +468,88 @@ export const dbAdapter = {
         (a, b) => new Date(b.lastActive).getTime() - new Date(a.lastActive).getTime()
       );
     });
+  },
+
+  async getBlockedIps(): Promise<BlockedIpDoc[]> {
+    const cacheKey = "blocked_ips_list";
+    return await cache.getOrSet(cacheKey, 10, async () => {
+      const db = await getDb();
+      if (db) {
+        try {
+          const docs = await db.collection("blocked_ips").find({}).sort({ blockedAt: -1 }).toArray();
+          return docs.map(({ _id, ...d }: any) => d as BlockedIpDoc);
+        } catch (err) {
+          console.warn("MongoDB getBlockedIps error:", err);
+        }
+      }
+      const store = localStore.get();
+      return (store as any).blocked_ips || [];
+    });
+  },
+
+  async blockIp(ip: string, reason = "Blocked by administrator"): Promise<BlockedIpDoc> {
+    const cleanIp = ip.trim();
+    const doc: BlockedIpDoc = {
+      ip: cleanIp,
+      reason,
+      blockedAt: new Date().toISOString(),
+    };
+    const db = await getDb();
+    if (db) {
+      try {
+        await db.collection("blocked_ips").updateOne(
+          { ip: cleanIp },
+          { $set: doc },
+          { upsert: true }
+        );
+      } catch (err) {
+        console.warn("MongoDB blockIp error:", err);
+      }
+    }
+    const store = localStore.get();
+    if (!(store as any).blocked_ips) (store as any).blocked_ips = [];
+    const idx = (store as any).blocked_ips.findIndex((b: any) => b.ip === cleanIp);
+    if (idx !== -1) {
+      (store as any).blocked_ips[idx] = doc;
+    } else {
+      (store as any).blocked_ips.unshift(doc);
+    }
+    localStore.save(store);
+    cache.delete("blocked_ips_list");
+    cache.set(`blocked_ip:${cleanIp}`, true, 300);
+    return doc;
+  },
+
+  async unblockIp(ip: string): Promise<void> {
+    const cleanIp = ip.trim();
+    const db = await getDb();
+    if (db) {
+      try {
+        await db.collection("blocked_ips").deleteOne({ ip: cleanIp });
+      } catch (err) {
+        console.warn("MongoDB unblockIp error:", err);
+      }
+    }
+    const store = localStore.get();
+    if ((store as any).blocked_ips) {
+      (store as any).blocked_ips = (store as any).blocked_ips.filter((b: any) => b.ip !== cleanIp);
+      localStore.save(store);
+    }
+    cache.delete("blocked_ips_list");
+    cache.delete(`blocked_ip:${cleanIp}`);
+  },
+
+  async isIpBlocked(ip: string): Promise<boolean> {
+    const cleanIp = ip.trim();
+    if (!cleanIp || cleanIp === "127.0.0.1" || cleanIp === "::1") return false;
+    const cacheKey = `blocked_ip:${cleanIp}`;
+    const cached = cache.get<boolean>(cacheKey);
+    if (cached !== null) return cached;
+
+    const list = await this.getBlockedIps();
+    const isBlocked = list.some((b) => b.ip === cleanIp);
+    cache.set(cacheKey, isBlocked, 60);
+    return isBlocked;
   },
 
   getStats: getGlobalStats,
