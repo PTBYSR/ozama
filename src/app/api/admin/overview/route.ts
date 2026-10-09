@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { checkAdminRequest } from "@/lib/admin-auth";
 import { dbAdapter, getDbDiagnostics } from "@/lib/mongodb";
 import { TOTAL_BOT_POOL } from "@/lib/bot-dispatcher";
+import { capacityTracker } from "@/lib/capacity-tracker";
 
 export async function GET(req: NextRequest) {
   if (!checkAdminRequest(req)) {
@@ -20,6 +21,8 @@ export async function GET(req: NextRequest) {
     const completedCount = orders.filter((o) => o.status === "completed").length;
     const failedCount = orders.filter((o) => o.status === "failed").length;
     const activeCount = orders.filter((o) => o.status === "streaming" || o.status === "allocating" || o.status === "queued").length;
+    const activeVisitors = capacityTracker.getActiveCount();
+    const maxCapacity = settings.maxCapacity ?? capacityTracker.getMaxCapacity();
 
     return NextResponse.json(
       {
@@ -34,6 +37,8 @@ export async function GET(req: NextRequest) {
           activeOrders: activeCount,
           botPoolSize: TOTAL_BOT_POOL,
           blockedIpsCount: blockedIps.length,
+          activeVisitors,
+          maxCapacity,
         },
         users,
         orders,

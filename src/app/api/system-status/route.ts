@@ -10,6 +10,7 @@ export async function GET(req: NextRequest) {
         maintenanceMessage: settings.maintenanceMessage || "",
         killSwitch: settings.killSwitch ?? false,
         killSwitchMessage: settings.killSwitchMessage || "Ozama is currently offline for system maintenance. Please check back shortly.",
+        maxCapacity: settings.maxCapacity ?? 20,
         updatedAt: settings.updatedAt,
       },
       {
@@ -26,6 +27,7 @@ export async function GET(req: NextRequest) {
         maintenanceMessage: "",
         killSwitch: false,
         killSwitchMessage: "Ozama is currently offline for system maintenance. Please check back shortly.",
+        maxCapacity: 20,
         updatedAt: new Date().toISOString(),
       },
       { status: 200 }

@@ -92,6 +92,9 @@ let inMemoryStore: LocalStore = {
   settings: {
     isLive: true,
     maintenanceMessage: "",
+    killSwitch: false,
+    killSwitchMessage: "Ozama is currently offline for system maintenance. Please check back shortly.",
+    maxCapacity: 20,
     updatedAt: new Date().toISOString(),
   },
 };
@@ -353,6 +356,7 @@ export const dbAdapter = {
               maintenanceMessage: doc.maintenanceMessage || "",
               killSwitch: doc.killSwitch ?? false,
               killSwitchMessage: doc.killSwitchMessage || "Ozama is currently offline for system maintenance. Please check back shortly.",
+              maxCapacity: typeof doc.maxCapacity === "number" && doc.maxCapacity > 0 ? Math.floor(doc.maxCapacity) : 20,
               updatedAt: doc.updatedAt || new Date().toISOString(),
             };
           }
@@ -367,9 +371,13 @@ export const dbAdapter = {
           maintenanceMessage: "",
           killSwitch: false,
           killSwitchMessage: "Ozama is currently offline for system maintenance. Please check back shortly.",
+          maxCapacity: 20,
           updatedAt: new Date().toISOString(),
         };
         localStore.save(store);
+      }
+      if (store.settings && store.settings.maxCapacity === undefined) {
+        store.settings.maxCapacity = 20;
       }
       return store.settings;
     });
@@ -396,6 +404,7 @@ export const dbAdapter = {
       maintenanceMessage: "",
       killSwitch: false,
       killSwitchMessage: "Ozama is currently offline for system maintenance. Please check back shortly.",
+      maxCapacity: 20,
       updatedAt: now,
     };
     store.settings = {
@@ -409,6 +418,10 @@ export const dbAdapter = {
         update.killSwitchMessage !== undefined
           ? update.killSwitchMessage
           : current.killSwitchMessage,
+      maxCapacity:
+        update.maxCapacity !== undefined && update.maxCapacity > 0
+          ? Math.floor(update.maxCapacity)
+          : (current.maxCapacity ?? 20),
       updatedAt: now,
     };
     localStore.save(store);

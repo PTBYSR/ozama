@@ -45,6 +45,7 @@ export interface SystemSettings {
   maintenanceMessage?: string;
   killSwitch?: boolean;
   killSwitchMessage?: string;
+  maxCapacity?: number;
   updatedAt: string;
 }
 

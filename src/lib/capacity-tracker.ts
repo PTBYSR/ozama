@@ -1,22 +1,27 @@
 // Active site capacity and session tracker
-// Enforces maximum 20 concurrent active users on the site.
+// Enforces dynamic concurrent active users limit on the site (default 20).
 
 interface ActiveSession {
   lastSeen: number;
   ip?: string;
 }
 
-const MAX_CAPACITY = 20;
+const DEFAULT_MAX_CAPACITY = 20;
 const SESSION_TTL_MS = 25_000; // 25 seconds inactivity timeout
 
 // In-memory active session map (survives across warm requests)
 declare global {
   // eslint-disable-next-line no-var
   var _ozamaActiveSessions: Map<string, ActiveSession> | undefined;
+  // eslint-disable-next-line no-var
+  var _ozamaMaxCapacity: number | undefined;
 }
 
 if (!global._ozamaActiveSessions) {
   global._ozamaActiveSessions = new Map<string, ActiveSession>();
+}
+if (global._ozamaMaxCapacity === undefined) {
+  global._ozamaMaxCapacity = DEFAULT_MAX_CAPACITY;
 }
 
 const sessions = global._ozamaActiveSessions;
@@ -30,20 +35,37 @@ function purgeExpiredSessions(now: number = Date.now()) {
 }
 
 export const capacityTracker = {
-  MAX_CAPACITY,
+  get MAX_CAPACITY(): number {
+    return global._ozamaMaxCapacity ?? DEFAULT_MAX_CAPACITY;
+  },
+
+  setMaxCapacity(capacity: number): void {
+    if (typeof capacity === "number" && !isNaN(capacity) && capacity > 0) {
+      global._ozamaMaxCapacity = Math.floor(capacity);
+    }
+  },
+
+  getMaxCapacity(): number {
+    return global._ozamaMaxCapacity ?? DEFAULT_MAX_CAPACITY;
+  },
 
   /**
    * Pings or registers a session.
-   * If existing or if active count < MAX_CAPACITY, allows entry.
+   * If existing or if active count < maxCapacity, allows entry.
    * Otherwise denies until a slot frees up.
    */
-  heartbeat(sessionId: string, ip?: string): {
+  heartbeat(sessionId: string, ip?: string, explicitMax?: number): {
     allowed: boolean;
     activeCount: number;
     maxCapacity: number;
   } {
     const now = Date.now();
     purgeExpiredSessions(now);
+
+    if (explicitMax !== undefined && typeof explicitMax === "number" && explicitMax > 0) {
+      this.setMaxCapacity(explicitMax);
+    }
+    const currentMax = this.getMaxCapacity();
 
     const isExisting = sessions.has(sessionId);
 
@@ -52,17 +74,17 @@ export const capacityTracker = {
       return {
         allowed: true,
         activeCount: sessions.size,
-        maxCapacity: MAX_CAPACITY,
+        maxCapacity: currentMax,
       };
     }
 
     // New visitor attempting to enter
-    if (sessions.size < MAX_CAPACITY) {
+    if (sessions.size < currentMax) {
       sessions.set(sessionId, { lastSeen: now, ip });
       return {
         allowed: true,
         activeCount: sessions.size,
-        maxCapacity: MAX_CAPACITY,
+        maxCapacity: currentMax,
       };
     }
 
@@ -70,7 +92,7 @@ export const capacityTracker = {
     return {
       allowed: false,
       activeCount: sessions.size,
-      maxCapacity: MAX_CAPACITY,
+      maxCapacity: currentMax,
     };
   },
 

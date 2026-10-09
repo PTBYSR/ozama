@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { checkAdminRequest } from "@/lib/admin-auth";
 import { dbAdapter } from "@/lib/mongodb";
+import { capacityTracker } from "@/lib/capacity-tracker";
 
 export async function POST(req: NextRequest) {
   if (!checkAdminRequest(req)) {
@@ -13,13 +14,20 @@ export async function POST(req: NextRequest) {
     const maintenanceMessage = typeof body.maintenanceMessage === "string" ? body.maintenanceMessage : "";
     const killSwitch = typeof body.killSwitch === "boolean" ? body.killSwitch : false;
     const killSwitchMessage = typeof body.killSwitchMessage === "string" ? body.killSwitchMessage : "";
+    const rawCapacity = Number(body.maxCapacity);
+    const maxCapacity = !isNaN(rawCapacity) && rawCapacity > 0 ? Math.floor(rawCapacity) : undefined;
 
     const updated = await dbAdapter.updateSystemSettings({
       isLive,
       maintenanceMessage,
       killSwitch,
       killSwitchMessage,
+      ...(maxCapacity !== undefined ? { maxCapacity } : {}),
     });
+
+    if (updated.maxCapacity) {
+      capacityTracker.setMaxCapacity(updated.maxCapacity);
+    }
 
     return NextResponse.json({
       success: true,

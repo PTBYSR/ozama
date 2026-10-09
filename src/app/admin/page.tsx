@@ -13,6 +13,8 @@ interface AdminStats {
   activeOrders: number;
   botPoolSize: number;
   blockedIpsCount?: number;
+  activeVisitors?: number;
+  maxCapacity?: number;
 }
 
 function formatCompactNaira(amount: number): string {
@@ -64,6 +66,7 @@ export default function AdminDashboardPage() {
     maintenanceMessage: "",
     killSwitch: false,
     killSwitchMessage: "Ozama is currently offline for system maintenance. Please check back shortly.",
+    maxCapacity: 20,
     updatedAt: "",
   });
   const [stats, setStats] = useState<AdminStats>({
@@ -75,17 +78,20 @@ export default function AdminDashboardPage() {
     activeOrders: 0,
     botPoolSize: 2699,
     blockedIpsCount: 0,
+    activeVisitors: 0,
+    maxCapacity: 20,
   });
   const [users, setUsers] = useState<UserSummary[]>([]);
   const [orders, setOrders] = useState<OrderDoc[]>([]);
   const [blockedIps, setBlockedIps] = useState<BlockedIpDoc[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
-  // Status & Kill switch controls
+  // Status & Kill switch & Capacity controls
   const [tempIsLive, setTempIsLive] = useState(true);
   const [tempMaintenanceMsg, setTempMaintenanceMsg] = useState("");
   const [tempKillSwitch, setTempKillSwitch] = useState(false);
   const [tempKillSwitchMsg, setTempKillSwitchMsg] = useState("");
+  const [tempMaxCapacity, setTempMaxCapacity] = useState<number>(20);
   const [isUpdatingStatus, setIsUpdatingStatus] = useState(false);
   const [statusSaveSuccess, setStatusSaveSuccess] = useState<string | null>(null);
 
@@ -161,6 +167,7 @@ export default function AdminDashboardPage() {
             data.systemStatus.killSwitchMessage ||
               "Ozama is currently offline for system maintenance. Please check back shortly."
           );
+          setTempMaxCapacity(data.systemStatus.maxCapacity ?? 20);
         }
         if (data.stats) setStats(data.stats);
         if (data.users) setUsers(data.users);
@@ -176,15 +183,19 @@ export default function AdminDashboardPage() {
     }
   };
 
-  // Save Settings (Live/Down, Kill Switch, Messages)
+  // Save Settings (Live/Down, Kill Switch, Capacity, Messages)
   const handleSaveSettings = async (overrides?: {
     isLive?: boolean;
     killSwitch?: boolean;
     maintenanceMessage?: string;
     killSwitchMessage?: string;
+    maxCapacity?: number;
   }) => {
     setIsUpdatingStatus(true);
     setStatusSaveSuccess(null);
+
+    const targetCapacity =
+      overrides?.maxCapacity !== undefined ? overrides.maxCapacity : tempMaxCapacity;
 
     const payload = {
       isLive: overrides?.isLive !== undefined ? overrides.isLive : tempIsLive,
@@ -193,6 +204,7 @@ export default function AdminDashboardPage() {
       killSwitch: overrides?.killSwitch !== undefined ? overrides.killSwitch : tempKillSwitch,
       killSwitchMessage:
         overrides?.killSwitchMessage !== undefined ? overrides.killSwitchMessage : tempKillSwitchMsg,
+      maxCapacity: Math.max(1, Math.floor(Number(targetCapacity) || 20)),
     };
 
     try {
@@ -207,6 +219,9 @@ export default function AdminDashboardPage() {
         setSystemStatus(data.settings);
         setTempIsLive(data.settings.isLive);
         setTempKillSwitch(data.settings.killSwitch || false);
+        if (data.settings.maxCapacity !== undefined) {
+          setTempMaxCapacity(data.settings.maxCapacity);
+        }
         setStatusSaveSuccess("✓ Configuration saved and published live!");
         setTimeout(() => setStatusSaveSuccess(null), 4000);
       }
@@ -619,9 +634,131 @@ export default function AdminDashboardPage() {
         </section>
 
         {/* ========================================================= */}
+        {/* SECTION 3: CONCURRENT SITE VISITORS CAPACITY */}
+        {/* ========================================================= */}
+        <section className="rounded-3xl border border-cyan-500/30 bg-[#07131d]/90 p-5 sm:p-7 backdrop-blur-xl transition-all shadow-xl relative overflow-hidden">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-6">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-[10px] sm:text-xs font-extrabold uppercase tracking-widest text-cyan-400">
+                  TRAFFIC & CONCURRENCY CONTROL
+                </span>
+                <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-[11px] font-bold border bg-cyan-500/15 text-cyan-300 border-cyan-500/30">
+                  <span className="w-2 h-2 rounded-full bg-cyan-400 animate-pulse" />
+                  {stats.activeVisitors ?? 0} / {systemStatus.maxCapacity ?? tempMaxCapacity} Live Active Sessions
+                </span>
+              </div>
+
+              <h2 className="text-xl sm:text-2xl font-black text-white font-display tracking-tight flex items-center gap-2">
+                <span>👥 Total Site Visitors Limit</span>
+              </h2>
+
+              <p className="text-xs text-slate-400 leading-relaxed max-w-2xl">
+                Restricts the maximum number of concurrent active users allowed on the site.
+                When active users hit this limit, incoming visitors are held on the waiting queue screen until a slot frees up.
+              </p>
+            </div>
+
+            {/* Capacity Input & Actions */}
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 shrink-0">
+              <div className="flex items-center bg-[#050a12] border border-cyan-500/40 rounded-2xl p-1.5 shadow-inner">
+                <button
+                  type="button"
+                  onClick={() => setTempMaxCapacity((prev) => Math.max(1, prev - 5))}
+                  className="w-10 h-10 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-lg flex items-center justify-center transition-colors cursor-pointer"
+                  title="Decrease by 5"
+                >
+                  -
+                </button>
+                <div className="px-3 flex flex-col items-center min-w-[90px]">
+                  <input
+                    type="number"
+                    min="1"
+                    max="1000"
+                    value={tempMaxCapacity}
+                    onChange={(e) => {
+                      const val = parseInt(e.target.value, 10);
+                      setTempMaxCapacity(isNaN(val) ? 1 : Math.max(1, Math.min(1000, val)));
+                    }}
+                    className="w-16 text-center bg-transparent font-display font-black text-xl text-cyan-300 focus:outline-none"
+                  />
+                  <span className="text-[10px] uppercase font-bold text-slate-400 -mt-0.5">visitors</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setTempMaxCapacity((prev) => Math.min(1000, prev + 5))}
+                  className="w-10 h-10 rounded-xl bg-slate-800 hover:bg-slate-700 text-white font-bold text-lg flex items-center justify-center transition-colors cursor-pointer"
+                  title="Increase by 5"
+                >
+                  +
+                </button>
+              </div>
+
+              <button
+                type="button"
+                onClick={() => handleSaveSettings({ maxCapacity: tempMaxCapacity })}
+                disabled={isUpdatingStatus}
+                className="px-5 py-3 min-h-[48px] rounded-2xl bg-cyan-500 hover:bg-cyan-400 text-slate-950 font-extrabold text-xs sm:text-sm transition-all cursor-pointer shadow-lg shadow-cyan-950 flex items-center justify-center gap-2"
+              >
+                {isUpdatingStatus ? (
+                  <span>Saving...</span>
+                ) : (
+                  <>
+                    <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5} d="M5 13l4 4L19 7" />
+                    </svg>
+                    <span>Save Visitor Limit</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          {/* Quick Presets */}
+          <div className="mt-4 pt-4 border-t border-slate-800/80 flex flex-wrap items-center gap-2">
+            <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider mr-1">
+              Quick Presets:
+            </span>
+            {[
+              { label: "10 (Strict)", value: 10 },
+              { label: "20 (Default)", value: 20 },
+              { label: "50 (Medium)", value: 50 },
+              { label: "100 (High)", value: 100 },
+              { label: "200 (Extreme)", value: 200 },
+            ].map((preset) => {
+              const isCurrent = (systemStatus.maxCapacity ?? 20) === preset.value;
+              const isSelected = tempMaxCapacity === preset.value;
+              return (
+                <button
+                  key={preset.value}
+                  type="button"
+                  onClick={() => {
+                    setTempMaxCapacity(preset.value);
+                    handleSaveSettings({ maxCapacity: preset.value });
+                  }}
+                  disabled={isUpdatingStatus}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold transition-all cursor-pointer border ${
+                    isSelected
+                      ? "bg-cyan-500/20 text-cyan-300 border-cyan-400 shadow-xs"
+                      : "bg-[#0b1626] text-slate-400 border-slate-800 hover:text-white hover:border-slate-700"
+                  }`}
+                >
+                  <span>{preset.label}</span>
+                  {isCurrent && (
+                    <span className="ml-1.5 text-[9px] px-1.5 py-0.2 rounded-full bg-cyan-400/20 text-cyan-300 font-normal">
+                      Active
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* ========================================================= */}
         {/* STATS OVERVIEW CARDS (Responsive Grid) */}
         {/* ========================================================= */}
-        <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3 sm:gap-4">
           <div className="bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-4 sm:p-5">
             <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
               Delivered Volume
@@ -669,7 +806,22 @@ export default function AdminDashboardPage() {
             </div>
           </div>
 
-          <div className="col-span-2 lg:col-span-1 bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-4 sm:p-5">
+          <div className="bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-4 sm:p-5">
+            <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
+              Active Visitors
+            </div>
+            <div className="text-xl sm:text-2xl font-black text-cyan-300 font-display">
+              {stats.activeVisitors ?? 0} <span className="text-xs text-slate-400 font-normal">/ {systemStatus.maxCapacity ?? 20}</span>
+            </div>
+            <div className="text-[10px] text-cyan-400/90 mt-1 flex items-center gap-1 font-semibold">
+              <span className="w-1.5 h-1.5 rounded-full bg-cyan-400 animate-pulse" />
+              <span>
+                {Math.round(((stats.activeVisitors ?? 0) / (systemStatus.maxCapacity || 20)) * 100)}% Max Capacity
+              </span>
+            </div>
+          </div>
+
+          <div className="bg-[#0e1626]/80 border border-slate-800/80 rounded-2xl p-4 sm:p-5">
             <div className="text-[10px] sm:text-xs font-bold uppercase tracking-wider text-slate-400 mb-1">
               Blocked IPs
             </div>

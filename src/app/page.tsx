@@ -59,10 +59,11 @@ export default function OzamaPage() {
     totalPlayers: 0,
   });
 
-  // Concurrency capacity state (max 20 users)
+  // Concurrency capacity state
   const [isCapacityChecked, setIsCapacityChecked] = useState(false);
   const [isAtCapacity, setIsAtCapacity] = useState(false);
   const [activeUsersCount, setActiveUsersCount] = useState(1);
+  const [maxCapacity, setMaxCapacity] = useState(20);
   const sessionIdRef = useRef<string>("");
 
   const [selectedOption, setSelectedOption] = useState<FundingOption>(OPTIONS[0]);
@@ -193,6 +194,9 @@ export default function OzamaPage() {
           killSwitch: data.killSwitch ?? false,
           killSwitchMessage: data.killSwitchMessage || "",
         });
+        if (data.maxCapacity) {
+          setMaxCapacity(data.maxCapacity);
+        }
       }
     } catch {
       // keep fallback
@@ -230,9 +234,11 @@ export default function OzamaPage() {
         if (res.ok) {
           const data = await res.json();
           setIsCapacityChecked(true);
+          const limit = data.maxCapacity || 20;
+          setMaxCapacity(limit);
           if (!data.allowed) {
             setIsAtCapacity(true);
-            setActiveUsersCount(data.activeCount || 20);
+            setActiveUsersCount(data.activeCount || limit);
           } else {
             setIsAtCapacity(false);
             setActiveUsersCount(data.activeCount || 1);
@@ -765,10 +771,10 @@ export default function OzamaPage() {
           </div>
           <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-amber-50 border border-amber-200 text-amber-800 text-xs font-semibold mb-4 mt-2">
             <span className="w-2 h-2 rounded-full bg-amber-500 animate-ping" />
-            Site at Capacity (20/20 Operators Active)
+            Site at Capacity ({activeUsersCount}/{maxCapacity} Operators Active)
           </div>
           <p className="text-sm text-[#5b6782] mb-6 leading-relaxed">
-            Concurrent funding desk capacity is strictly limited to 20 users to protect bot swarm pipelines.
+            Concurrent funding desk capacity is strictly limited to {maxCapacity} users to protect bot swarm pipelines.
             You are queued — access will open automatically as soon as an operator leaves.
           </p>
           <div className="flex items-center justify-center gap-2 text-xs text-[#2f7de1] font-semibold py-2">

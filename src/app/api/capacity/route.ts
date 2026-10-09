@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { capacityTracker } from "@/lib/capacity-tracker";
+import { dbAdapter } from "@/lib/mongodb";
 
 export async function POST(req: NextRequest) {
   try {
@@ -21,7 +22,11 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ released: true });
     }
 
-    const result = capacityTracker.heartbeat(sessionId, ip);
+    // Sync configured max capacity from database settings (cached)
+    const settings = await dbAdapter.getSystemSettings();
+    const configuredCapacity = settings?.maxCapacity ?? capacityTracker.getMaxCapacity();
+
+    const result = capacityTracker.heartbeat(sessionId, ip, configuredCapacity);
     return NextResponse.json(result);
   } catch (err: any) {
     return NextResponse.json(
@@ -32,12 +37,16 @@ export async function POST(req: NextRequest) {
 }
 
 export async function GET(req: NextRequest) {
+  const settings = await dbAdapter.getSystemSettings();
+  const configuredCapacity = settings?.maxCapacity ?? capacityTracker.getMaxCapacity();
+  capacityTracker.setMaxCapacity(configuredCapacity);
   const activeCount = capacityTracker.getActiveCount();
+
   return NextResponse.json(
     {
       activeCount,
-      maxCapacity: capacityTracker.MAX_CAPACITY,
-      availableSlots: Math.max(0, capacityTracker.MAX_CAPACITY - activeCount),
+      maxCapacity: configuredCapacity,
+      availableSlots: Math.max(0, configuredCapacity - activeCount),
     },
     {
       headers: {
