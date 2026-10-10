@@ -99,6 +99,7 @@ export default function AdminDashboardPage() {
   const [manualIp, setManualIp] = useState("");
   const [manualReason, setManualReason] = useState("");
   const [isBlockingIp, setIsBlockingIp] = useState(false);
+  const [resettingUser, setResettingUser] = useState<string | null>(null);
   const [ipActionFeedback, setIpActionFeedback] = useState<string | null>(null);
 
   // Tab & Filters
@@ -271,6 +272,30 @@ export default function AdminDashboardPage() {
       setIpActionFeedback(`⚠️ Network error: ${err.message}`);
     } finally {
       setIsBlockingIp(false);
+    }
+  };
+
+  // Reset a user's cooldown and daily limits
+  const handleResetUser = async (username: string) => {
+    if (!confirm(`Are you sure you want to reset cooldown and daily limits for @${username}?`)) return;
+    setResettingUser(username);
+    try {
+      const res = await fetch("/api/admin/reset-user", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username }),
+      });
+      if (res.ok) {
+        alert(`✓ Limits reset successfully for @${username}`);
+        fetchOverview();
+      } else {
+        const data = await res.json();
+        alert(`⚠️ Error: ${data.error || "Failed to reset user"}`);
+      }
+    } catch (err: any) {
+      alert(`⚠️ Network error: ${err.message}`);
+    } finally {
+      setResettingUser(null);
     }
   };
 
@@ -996,6 +1021,14 @@ export default function AdminDashboardPage() {
                             {user.lastIp || "—"}
                           </td>
                           <td className="py-3.5 px-4 sm:px-6 text-right space-x-2">
+                            <button
+                              onClick={() => handleResetUser(user.username)}
+                              disabled={resettingUser === user.username}
+                              className="px-2.5 py-1 rounded-lg bg-amber-500/10 hover:bg-amber-500/25 text-amber-300 border border-amber-500/20 text-[11px] font-bold transition-all cursor-pointer"
+                              title="Reset cooldown and daily funding limits for this user"
+                            >
+                              {resettingUser === user.username ? "Resetting..." : "⚡ Reset"}
+                            </button>
                             {user.lastIp && (
                               <button
                                 onClick={() => handleBlockIp(user.lastIp!, `Blocked player @${user.username}`)}

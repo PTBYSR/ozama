@@ -315,25 +315,20 @@ export const dbAdapter = {
       }
 
       // Auto-cleanup stale in-progress orders (e.g. user closed tab or disconnected > 2 mins ago)
+      await dbAdapter.cleanupStaleOrders(120);
+
       const now = Date.now();
       const cleanedOrders = rawOrders.map((order) => {
         const isActive = ["streaming", "allocating", "authenticating", "queued"].includes(order.status);
         if (isActive) {
           const lastTouch = new Date(order.updatedAt || order.createdAt).getTime();
           if (now - lastTouch > 2 * 60 * 1000) {
-            const updated: OrderDoc = {
+            return {
               ...order,
               status: "failed" as const,
               error: order.error || "Session timed out or closed by user",
               updatedAt: new Date(lastTouch).toISOString(),
             };
-            if (db) {
-              db.collection("orders").updateOne(
-                { id: order.id },
-                { $set: { status: "failed", error: "Session timed out or closed by user" } }
-              ).catch(() => {});
-            }
-            return updated;
           }
         }
         return order;
@@ -341,6 +336,103 @@ export const dbAdapter = {
 
       return cleanedOrders;
     });
+  },
+
+  async cleanupStaleOrders(maxInactiveSeconds = 90): Promise<number> {
+    const cutoff = new Date(Date.now() - maxInactiveSeconds * 1000).toISOString();
+    let cleanedCount = 0;
+    const db = await getDb();
+    if (db) {
+      try {
+        const res = await db.collection("orders").updateMany(
+          {
+            status: { $in: ["queued", "authenticating", "allocating", "streaming"] },
+            $or: [
+              { updatedAt: { $lt: cutoff } },
+              { updatedAt: { $exists: false }, createdAt: { $lt: cutoff } },
+            ],
+          },
+          {
+            $set: {
+              status: "failed",
+              error: "Session timed out or closed by user",
+              updatedAt: new Date().toISOString(),
+            },
+          }
+        );
+        cleanedCount = res.modifiedCount;
+      } catch (err) {
+        console.warn("MongoDB cleanupStaleOrders error:", err);
+      }
+    }
+
+    const store = localStore.get();
+    let localModified = false;
+    store.orders.forEach((o) => {
+      if (["queued", "authenticating", "allocating", "streaming"].includes(o.status)) {
+        const lastTouch = new Date(o.updatedAt || o.createdAt).getTime();
+        if (Date.now() - lastTouch > maxInactiveSeconds * 1000) {
+          o.status = "failed";
+          o.error = "Session timed out or closed by user";
+          o.updatedAt = new Date().toISOString();
+          localModified = true;
+          cleanedCount++;
+        }
+      }
+    });
+    if (localModified) {
+      localStore.save(store);
+    }
+
+    if (cleanedCount > 0) {
+      cache.invalidatePrefix("recent_orders");
+      cache.invalidatePrefix("all_orders");
+      cache.delete("user_summaries");
+    }
+
+    return cleanedCount;
+  },
+
+  async resetUserCooldown(username: string): Promise<boolean> {
+    const clean = username.trim().toLowerCase().replace(/^@+/, "");
+    const db = await getDb();
+    if (db) {
+      try {
+        await db.collection("funding_events").deleteMany({ username: clean });
+        await db.collection("orders").updateMany(
+          {
+            username: clean,
+            status: { $in: ["queued", "authenticating", "allocating", "streaming"] },
+          },
+          {
+            $set: {
+              status: "failed",
+              error: "Reset by administrator",
+              updatedAt: new Date().toISOString(),
+            },
+          }
+        );
+      } catch (err) {
+        console.warn("MongoDB resetUserCooldown error:", err);
+      }
+    }
+
+    const store = localStore.get();
+    store.funding_events = store.funding_events.filter((e) => e.username !== clean);
+    store.orders.forEach((o) => {
+      if (o.username === clean && ["queued", "authenticating", "allocating", "streaming"].includes(o.status)) {
+        o.status = "failed";
+        o.error = "Reset by administrator";
+        o.updatedAt = new Date().toISOString();
+      }
+    });
+    localStore.save(store);
+
+    cache.invalidatePrefix("recent_orders");
+    cache.invalidatePrefix("all_orders");
+    cache.delete("user_summaries");
+    cache.delete("global_stats");
+    return true;
   },
 
   async getSystemSettings(): Promise<SystemSettings> {

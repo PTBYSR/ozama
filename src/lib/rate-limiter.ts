@@ -79,9 +79,11 @@ export async function checkRateLimit(
       const collection = db.collection("funding_events");
 
       // Guard 1: In-Flight Active Order Lock (Prevents race conditions, multi-device & double submits)
+      const activeCutoff = new Date(now - 90 * 1000).toISOString();
       const activeOrder = await db.collection("orders").findOne({
         username,
         status: { $in: ["queued", "authenticating", "allocating", "streaming"] },
+        updatedAt: { $gte: activeCutoff },
       });
 
       if (activeOrder) {
@@ -180,10 +182,12 @@ export async function checkRateLimit(
   // Fallback to local store
   const store = localStore.get();
 
+  const activeCutoffMs = now - 90 * 1000;
   const activeOrder = store.orders.find(
     (o) =>
       o.username === username &&
-      ["queued", "authenticating", "allocating", "streaming"].includes(o.status)
+      ["queued", "authenticating", "allocating", "streaming"].includes(o.status) &&
+      new Date(o.updatedAt || o.createdAt).getTime() >= activeCutoffMs
   );
 
   if (activeOrder) {

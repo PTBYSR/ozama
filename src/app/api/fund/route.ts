@@ -81,29 +81,7 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    // 3. Global Swarm Concurrency Guard (max 3 active swarm transfers at once)
-    const db = await getDb();
-    let activeSwarmCount = 0;
-    if (db) {
-      activeSwarmCount = await db.collection("orders").countDocuments({
-        status: { $in: ["queued", "authenticating", "allocating", "streaming"] },
-      });
-    } else {
-      activeSwarmCount = localStore.get().orders.filter((o) =>
-        ["queued", "authenticating", "allocating", "streaming"].includes(o.status)
-      ).length;
-    }
-
-    if (activeSwarmCount >= 3) {
-      return NextResponse.json(
-        {
-          error: "The swarm is currently busy funding other accounts. Please wait small and try again.",
-        },
-        { status: 503 }
-      );
-    }
-
-    // 4. Check rate limits (In-Flight Order Lock, Daily 5 tries limit & Tier cooldown window)
+    // 3. Check rate limits FIRST (In-Flight Order Lock, Daily 5 tries limit & Tier cooldown window)
     const limitStatus = await checkRateLimit(username, amount, option.windowSeconds);
 
     if (!limitStatus.canFund) {
@@ -121,6 +99,33 @@ export async function POST(req: NextRequest) {
           },
         },
         { status: 429 }
+      );
+    }
+
+    // 4. Auto-clean stale abandoned orders (>90s) & check live Swarm Concurrency
+    await dbAdapter.cleanupStaleOrders(90);
+
+    const db = await getDb();
+    let activeSwarmCount = 0;
+    const activeCutoff = new Date(Date.now() - 90 * 1000).toISOString();
+    if (db) {
+      activeSwarmCount = await db.collection("orders").countDocuments({
+        status: { $in: ["queued", "authenticating", "allocating", "streaming"] },
+        updatedAt: { $gte: activeCutoff },
+      });
+    } else {
+      activeSwarmCount = localStore.get().orders.filter((o) =>
+        ["queued", "authenticating", "allocating", "streaming"].includes(o.status) &&
+        Date.now() - new Date(o.updatedAt || o.createdAt).getTime() <= 90 * 1000
+      ).length;
+    }
+
+    if (activeSwarmCount >= 5) {
+      return NextResponse.json(
+        {
+          error: "The swarm is currently busy funding other accounts. Please wait small and try again.",
+        },
+        { status: 503 }
       );
     }
 
