@@ -15,7 +15,7 @@ export async function GET(req: NextRequest) {
       },
       {
         headers: {
-          "Cache-Control": "no-store, max-age=0",
+          "Cache-Control": "public, s-maxage=10, stale-while-revalidate=30",
         },
       }
     );

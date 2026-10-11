@@ -7,7 +7,7 @@ interface ActiveSession {
 }
 
 const DEFAULT_MAX_CAPACITY = 20;
-const SESSION_TTL_MS = 25_000; // 25 seconds inactivity timeout
+const SESSION_TTL_MS = 60_000; // 60s inactivity timeout (supports 30s client pings) // 25 seconds inactivity timeout
 
 // In-memory active session map (survives across warm requests)
 declare global {

@@ -1,3 +1,4 @@
+import { cache } from "./cache";
 import path from "path";
 import fs from "fs";
 
@@ -39,6 +40,12 @@ function getRegistry(): Registry {
  * Resolves a Lagos Life username into their real in-game userId.
  */
 export async function resolvePlayer(targetUsername: string): Promise<{ id: string; username: string } | null> {
+  const cleanKey = targetUsername.toLowerCase().trim().replace(/^@+/, "");
+  if (!cleanKey) return null;
+  const cacheKey = `resolved_player:${cleanKey}`;
+  const cached = cache.get<{ id: string; username: string }>(cacheKey);
+  if (cached) return cached;
+
   const reg = getRegistry();
   const candidateBots = [
     reg.sessions["profile_1"],
@@ -70,7 +77,10 @@ export async function resolvePlayer(targetUsername: string): Promise<{ id: strin
       const clean = targetUsername.toLowerCase().trim().replace(/^@+/, "");
       const match = list.find((p) => p.username.toLowerCase() === clean);
 
-      if (match) return match;
+      if (match) {
+        cache.set(cacheKey, match, 300_000); // Cache player ID for 5 mins
+        return match;
+      }
     } catch {
       // try next candidate
     }

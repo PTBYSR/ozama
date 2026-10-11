@@ -207,7 +207,7 @@ export default function OzamaPage() {
   useEffect(() => {
     fetchStats();
     fetchSystemStatus();
-    const statusInterval = setInterval(fetchSystemStatus, 8000);
+    const statusInterval = setInterval(() => { if (document.visibilityState === 'visible') fetchSystemStatus(); }, 35000);
     // Anti-bot challenge token with client timestamp
     const token = btoa(`ozm_${Date.now()}_${Math.random().toString(36).slice(2)}`);
     setBotToken(token);
@@ -251,7 +251,7 @@ export default function OzamaPage() {
 
     pingCapacity();
     // Heartbeat ping every 8 seconds
-    const interval = setInterval(pingCapacity, 8000);
+    const interval = setInterval(() => { if (document.visibilityState === 'visible') pingCapacity(); }, 30000);
 
     const handleBeforeUnload = () => {
       if (navigator.sendBeacon) {
@@ -261,11 +261,19 @@ export default function OzamaPage() {
         );
       }
     };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        pingCapacity();
+        fetchSystemStatus();
+      }
+    };
     window.addEventListener("beforeunload", handleBeforeUnload);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
 
     return () => {
       clearInterval(interval);
       window.removeEventListener("beforeunload", handleBeforeUnload);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, []);
 
